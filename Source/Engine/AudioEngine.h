@@ -1,0 +1,151 @@
+#pragma once
+
+#include "AudioFileDecoder.h"
+#include "Deck.h"
+#include "Mixer.h"
+
+#include <juce_audio_devices/juce_audio_devices.h>
+#include <functional>
+#include <memory>
+
+namespace hype
+{
+/**
+    HYPE DJ PRO core engine: two Decks + Mixer driven by one audio device callback.
+
+    * Both decks are rendered in the same callback from the same sample clock, so they are
+      inherently sample-synchronous; transport commands can be scheduled at an exact engine
+      sample (getSampleClock()) for tight, repeatable timing.
+    * The callback never allocates, locks or frees memory. Device buffers of any size are
+      processed in chunks of at most config::maxInternalBlock frames.
+    * Track decoding + beat analysis happen on a background thread pool; decoded tracks are
+      handed to the deck through a lock-free queue and released on a housekeeping thread.
+
+    The engine can also be driven without an audio device (prepareToPlay + processBlock), which
+    is how the tests and offline rendering work.
+*/
+class AudioEngine : private juce::AudioIODeviceCallback
+{
+public:
+    struct DeviceSettings
+    {
+        juce::String deviceType;        // "ALSA", "JACK", "CoreAudio", "ASIO", "Windows Audio"...; empty = default
+        juce::String outputDevice;      // empty = default device for the type
+        double       sampleRate = 0.0;  // 0 = device default
+        int          bufferSize = 0;    // 0 = device default (prefer 128..512 for DJ use)
+        int          numOutputChannels = 4; // 2 = master only, 4 = master + headphone cue
+    };
+
+    struct DeviceStatus
+    {
+        bool         open = false;
+        juce::String typeName, deviceName;
+        double       sampleRate = 0.0;
+        int          bufferSize = 0;
+        int          numOutputChannels = 0;
+        double       outputLatencyMs = 0.0;
+        int          xruns = -1;          // -1 if the driver can't report it
+        double       cpuLoad = 0.0;       // 0..1 of the callback's time budget
+    };
+
+    /** Called on a background thread when a load finishes (successfully or not). */
+    using LoadCallback = std::function<void (int deck, const AudioFileDecoder::Result&)>;
+
+    AudioEngine();
+    ~AudioEngine() override;
+
+    //--- device ---------------------------------------------------------------
+    /** Returns an empty string on success, otherwise an error message. */
+    juce::String openDevice (const DeviceSettings& settings);
+    juce::String openDevice()   { return openDevice (DeviceSettings {}); }
+    void closeDevice();
+    DeviceStatus getDeviceStatus() const;
+    juce::AudioDeviceManager& getDeviceManager() noexcept { return deviceManager; }
+
+    //--- decks / mixer --------------------------------------------------------
+    Deck&  getDeck (int index) noexcept       { return *decks[(size_t) index]; }
+    Mixer& getMixer() noexcept                { return mixer; }
+
+    //--- loading --------------------------------------------------------------
+    /** Decodes + analyses on a background thread, then swaps the track into the deck.
+        A newer request for the same deck cancels an older one still in progress. */
+    void loadTrackAsync (int deck, const juce::File& file, LoadCallback onFinished = {});
+
+    /** Blocking variant (decodes on the calling thread). The swap still happens on the audio thread. */
+    AudioFileDecoder::Result loadTrackSync (int deck, const juce::File& file);
+
+    /** Decode + beat analysis without loading into a deck. */
+    static AudioFileDecoder::Result decodeAndAnalyse (AudioFileDecoder& decoder, const juce::File& file,
+                                                      const std::atomic<bool>* cancelFlag = nullptr);
+
+    juce::String getSupportedFormatsWildcard() const;
+
+    //--- synchronisation (executed sample-exactly on the audio thread) ---------
+    /** One-shot: match `slave` tempo to `master` (with half/double-time matching) and optionally snap its beat phase. */
+    bool syncDeck (int slave, int master, bool alignPhase = true);
+    /** Continuous tempo lock of `slave` to `master`; pass master = -1 to release. */
+    bool setSyncLock (int slave, int master);
+    /** Tempo-syncs `slave`, moves it to its nearest beat and starts it exactly on `master`'s next beat. */
+    bool playInSync (int slave, int master);
+
+    int64_t getSampleClock() const noexcept   { return sampleClock.load (std::memory_order_acquire); }
+    double  getSampleRate() const noexcept    { return currentSampleRate.load(); }
+
+    //--- manual / offline driving ---------------------------------------------
+    void prepareToPlay (double sampleRate, int expectedBlockSize = config::maxInternalBlock);
+    /** Renders `numSamples` frames into `outputs` (any block size). Real-time safe. */
+    void processBlock (float* const* outputs, int numOutputChannels, int numSamples) noexcept;
+
+    /** Releases retired tracks. Called periodically by the housekeeping thread; exposed for offline use. */
+    void collectGarbage();
+
+private:
+    enum class EngineCommandType : uint8_t { Sync, SyncLock, PlayInSync };
+    struct EngineCommand { EngineCommandType type; int slave = 0, master = 0; bool flag = false; };
+
+    // AudioIODeviceCallback
+    void audioDeviceIOCallbackWithContext (const float* const* inputs, int numInputs,
+                                           float* const* outputs, int numOutputs, int numSamples,
+                                           const juce::AudioIODeviceCallbackContext&) override;
+    void audioDeviceAboutToStart (juce::AudioIODevice*) override;
+    void audioDeviceStopped() override;
+    void audioDeviceError (const juce::String& message) override;
+
+    bool pushEngineCommand (const EngineCommand&);
+    void applyEngineCommand (const EngineCommand&) noexcept;
+    void syncAudio (int slave, int master, bool alignPhase) noexcept;
+    void updateSyncLocks() noexcept;
+    static double matchTempoRatio (double ratio) noexcept;
+
+    class Housekeeper;
+    class LoadJob;
+
+    juce::AudioDeviceManager deviceManager;
+    std::array<std::unique_ptr<Deck>, config::numDecks> decks;
+    Mixer mixer;
+
+    // engine command FIFO
+    juce::SpinLock engineProducerLock;
+    SpscQueue<EngineCommand, 64> engineCommands;
+
+    // audio-thread state
+    int syncMaster[config::numDecks];
+    int64_t scheduledPlay[config::numDecks];
+    juce::AudioBuffer<float> deckBuffers;
+    static constexpr int maxOutputChannels = 64;
+    float* chunkOutputs[maxOutputChannels] {};
+    juce::AudioProcessLoadMeasurer loadMeasurer;
+
+    std::atomic<int64_t> sampleClock { 0 };
+    std::atomic<double>  currentSampleRate { 48000.0 };
+
+    // loading
+    juce::ThreadPool loaderPool { juce::ThreadPoolOptions{}.withThreadName ("HYPE loader").withNumberOfThreads (2) };
+    juce::SpinLock loadLock;
+    std::shared_ptr<std::atomic<bool>> activeLoadCancel[config::numDecks];
+
+    std::unique_ptr<Housekeeper> housekeeper;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioEngine)
+};
+} // namespace hype

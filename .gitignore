@@ -1,0 +1,6 @@
+build*/
+external/JUCE/
+.vscode/
+.idea/
+*.user
+.DS_Store
