@@ -1,6 +1,8 @@
 #pragma once
 
+#include "WaveformData.h"
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <memory>
 
 namespace hype
 {
@@ -58,6 +60,12 @@ public:
     double       getSampleRate() const noexcept     { return info.sampleRate; }
     const TrackInfo& getInfo() const noexcept       { return info; }
 
+    /** Display waveform (may be null for tracks built in memory). */
+    std::shared_ptr<const WaveformData> getWaveform() const noexcept { return waveform; }
+
+    /** Only valid before the track is handed to a Deck (the loader sets analysis results here). */
+    void setWaveform (std::shared_ptr<const WaveformData> w) noexcept { waveform = std::move (w); }
+
     /** Only valid before the track is handed to a Deck (the loader sets analysis results here). */
     void setBeatGrid (double bpm, double firstBeatSeconds) noexcept
     {
@@ -68,6 +76,7 @@ public:
 private:
     juce::AudioBuffer<float> audio;
     TrackInfo info;
+    std::shared_ptr<const WaveformData> waveform;
 
     JUCE_DECLARE_NON_COPYABLE (LoadedTrack)
 };

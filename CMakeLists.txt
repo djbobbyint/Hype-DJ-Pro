@@ -81,6 +81,12 @@ add_library(hype_engine STATIC
     Source/Engine/SincInterpolator.cpp
     Source/Engine/SincInterpolator.h
     Source/Engine/SpscQueue.h
+    Source/Engine/ThreeBandEq.cpp
+    Source/Engine/ThreeBandEq.h
+    Source/Engine/WaveformData.cpp
+    Source/Engine/WaveformData.h
+    Source/Engine/AudioDeviceController.cpp
+    Source/Engine/AudioDeviceController.h
     Source/Engine/TimeStretcher.cpp
     Source/Engine/TimeStretcher.h)
 

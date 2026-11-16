@@ -54,7 +54,13 @@ public:
     AudioEngine();
     ~AudioEngine() override;
 
+    static constexpr int maxOutputChannels = 64;
+
     //--- device ---------------------------------------------------------------
+    /** Registers the engine as the device manager's audio callback (idempotent). Used by
+        AudioDeviceController, which manages the device itself. */
+    void attachToDeviceManager();
+
     /** Returns an empty string on success, otherwise an error message. */
     juce::String openDevice (const DeviceSettings& settings);
     juce::String openDevice()   { return openDevice (DeviceSettings {}); }
@@ -99,6 +105,11 @@ public:
     /** Releases retired tracks. Called periodically by the housekeeping thread; exposed for offline use. */
     void collectGarbage();
 
+    /** Incremented on every device callback; lets a watchdog detect a stalled device. */
+    uint32_t getCallbackCount() const noexcept     { return callbackCounter.load (std::memory_order_relaxed); }
+    /** Set when the driver reported an error (e.g. device unplugged); cleared on restart. */
+    bool hasDeviceError() const noexcept           { return deviceErrorFlag.load(); }
+
 private:
     enum class EngineCommandType : uint8_t { Sync, SyncLock, PlayInSync };
     struct EngineCommand { EngineCommandType type; int slave = 0, master = 0; bool flag = false; };
@@ -111,6 +122,8 @@ private:
     void audioDeviceStopped() override;
     void audioDeviceError (const juce::String& message) override;
 
+    void renderBlock (float* const* outputs, int numOutputChannels, int numSamples,
+                      const int* physicalToPackedMap, int numPhysical) noexcept;
     bool pushEngineCommand (const EngineCommand&);
     void applyEngineCommand (const EngineCommand&) noexcept;
     void syncAudio (int slave, int master, bool alignPhase) noexcept;
@@ -132,8 +145,11 @@ private:
     int syncMaster[config::numDecks];
     int64_t scheduledPlay[config::numDecks];
     juce::AudioBuffer<float> deckBuffers;
-    static constexpr int maxOutputChannels = 64;
     float* chunkOutputs[maxOutputChannels] {};
+    int physicalToPacked[maxOutputChannels] {};
+    int numPhysicalOutputs = 0;
+    std::atomic<uint32_t> callbackCounter { 0 };
+    std::atomic<bool> deviceErrorFlag { false };
     juce::AudioProcessLoadMeasurer loadMeasurer;
 
     std::atomic<int64_t> sampleClock { 0 };

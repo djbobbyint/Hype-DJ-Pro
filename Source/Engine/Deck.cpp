@@ -63,10 +63,12 @@ bool Deck::loadTrack (LoadedTrack::Ptr newTrack)
 
     const int gen = nextGeneration.fetch_add (1);
 
+    LoadedTrack::Ptr previous;  // released outside the lock
     {
         const juce::SpinLock::ScopedLockType sl (infoLock);
-        pendingInfo = newTrack->getInfo();
-        pendingInfoGeneration = gen;
+        previous = std::move (pendingTrack);
+        pendingTrack = newTrack;
+        pendingTrackGeneration = gen;
     }
 
     Command c { CommandType::Load };
@@ -86,7 +88,21 @@ bool Deck::eject()
 {
     Command c { CommandType::Load };
     c.generation = nextGeneration.fetch_add (1);
+
+    LoadedTrack::Ptr previous;
+    {
+        const juce::SpinLock::ScopedLockType sl (infoLock);
+        previous = std::move (pendingTrack);
+        pendingTrackGeneration = c.generation;
+    }
     return push (c);
+}
+
+LoadedTrack::Ptr Deck::getDisplayTrack() const
+{
+    const int loaded = pubGeneration.load (std::memory_order_acquire);
+    const juce::SpinLock::ScopedLockType sl (infoLock);
+    return pendingTrackGeneration == loaded ? pendingTrack : nullptr;
 }
 
 bool Deck::play (int64_t at)            { Command c { CommandType::Play };  c.atSample = at; return push (c); }
@@ -176,10 +192,10 @@ Deck::State Deck::getState() const
     if (s.loaded)
     {
         const juce::SpinLock::ScopedLockType sl (infoLock);
-        if (pendingInfoGeneration == s.trackGeneration)
+        if (pendingTrackGeneration == s.trackGeneration && pendingTrack != nullptr)
         {
-            s.title  = pendingInfo.title;
-            s.artist = pendingInfo.artist;
+            s.title  = pendingTrack->getInfo().title;
+            s.artist = pendingTrack->getInfo().artist;
         }
     }
 

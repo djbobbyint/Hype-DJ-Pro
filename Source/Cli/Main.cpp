@@ -87,7 +87,7 @@ void handleCommand (AudioEngine& engine, const juce::String& line, bool& quit)
         printDeck ("A", engine.getDeck (0).getState());
         printDeck ("B", engine.getDeck (1).getState());
         const auto m = mixer.getAndResetMeters();
-        std::cout << "Master peak " << juce::String (juce::Decibels::gainToDecibels (juce::jmax (m.masterL, m.masterR)), 1)
+        std::cout << "Master peak " << juce::String (juce::Decibels::gainToDecibels (juce::jmax (m.masterPeakL, m.masterPeakR)), 1)
                   << " dBFS" << (m.masterClipped ? "  [LIMITING]" : "")
                   << "  xfader " << juce::String (mixer.getCrossfader(), 2) << "\n";
         return;

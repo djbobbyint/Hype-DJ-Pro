@@ -134,6 +134,12 @@ juce::String AudioEngine::openDevice (const DeviceSettings& settings)
     return {};
 }
 
+void AudioEngine::attachToDeviceManager()
+{
+    deviceManager.removeAudioCallback (this);
+    deviceManager.addAudioCallback (this);
+}
+
 void AudioEngine::closeDevice()
 {
     deviceManager.removeAudioCallback (this);
@@ -162,14 +168,25 @@ AudioEngine::DeviceStatus AudioEngine::getDeviceStatus() const
 
 void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
 {
+    // JUCE passes only the *active* output channels, packed in order. Build the map from
+    // physical channel number (what the routing uses) to packed index.
+    const auto active = device->getActiveOutputChannels();
+    int packed = 0;
+    for (int phys = 0; phys < maxOutputChannels; ++phys)
+        physicalToPacked[phys] = active[phys] ? packed++ : -1;
+    numPhysicalOutputs = juce::jmin (maxOutputChannels, active.getHighestBit() + 1);
+
     prepareToPlay (device->getCurrentSampleRate(), device->getCurrentBufferSizeSamples());
+    deviceErrorFlag.store (false);
 }
 
 void AudioEngine::audioDeviceStopped() {}
 
 void AudioEngine::audioDeviceError (const juce::String& message)
 {
-    DBG ("HYPE audio device error: " << message);
+    // Called by some drivers when the device disappears; the AudioDeviceController's
+    // watchdog sees this flag and recovers on the message thread.
+    deviceErrorFlag.store (true);
     juce::ignoreUnused (message);
 }
 
@@ -177,7 +194,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const*, int,
                                                     float* const* outputs, int numOutputs, int numSamples,
                                                     const juce::AudioIODeviceCallbackContext&)
 {
-    processBlock (outputs, numOutputs, numSamples);
+    callbackCounter.fetch_add (1, std::memory_order_relaxed);
+    renderBlock (outputs, numOutputs, numSamples, physicalToPacked, numPhysicalOutputs);
 }
 
 //==============================================================================
@@ -198,15 +216,21 @@ void AudioEngine::prepareToPlay (double sampleRate, int expectedBlockSize)
 
 void AudioEngine::processBlock (float* const* outputs, int numOutputChannels, int numSamples) noexcept
 {
+    // Offline / manual use: outputs are indexed by physical channel directly.
+    renderBlock (outputs, numOutputChannels, numSamples, nullptr, juce::jmin (numOutputChannels, maxOutputChannels));
+}
+
+void AudioEngine::renderBlock (float* const* outputs, int numOutputChannels, int numSamples,
+                               const int* physToPacked, int numPhysical) noexcept
+{
     juce::ScopedNoDenormals noDenormals;
     juce::AudioProcessLoadMeasurer::ScopedTimer timer (loadMeasurer, numSamples);
 
-    // Channels beyond what we route are silenced once up front.
-    for (int c = maxOutputChannels; c < numOutputChannels; ++c)
+    // Silence everything once up front; the mixer overwrites the channels it routes to.
+    for (int c = 0; c < numOutputChannels; ++c)
         if (outputs[c] != nullptr)
             juce::FloatVectorOperations::clear (outputs[c], numSamples);
 
-    const int numOut = juce::jmin (numOutputChannels, maxOutputChannels);
     int64_t now = sampleClock.load (std::memory_order_relaxed);
 
     // 1) Commands from the control threads. Deck commands first, so engine-level actions
@@ -258,10 +282,14 @@ void AudioEngine::processBlock (float* const* outputs, int numOutputChannels, in
             deckR[d] = r;
         }
 
-        for (int c = 0; c < numOut; ++c)
-            chunkOutputs[c] = outputs[c] != nullptr ? outputs[c] + offset : nullptr;
+        for (int phys = 0; phys < numPhysical; ++phys)
+        {
+            const int packed = physToPacked != nullptr ? physToPacked[phys] : phys;
+            chunkOutputs[phys] = (packed >= 0 && packed < numOutputChannels && outputs[packed] != nullptr)
+                                     ? outputs[packed] + offset : nullptr;
+        }
 
-        mixer.process (deckL, deckR, chunkOutputs, numOut, chunk);
+        mixer.process (deckL, deckR, chunkOutputs, numPhysical, chunk);
 
         offset += chunk;
         now += chunk;
@@ -294,6 +322,10 @@ AudioFileDecoder::Result AudioEngine::decodeAndAnalyse (AudioFileDecoder& decode
         if (beats.bpm > 0.0)
             result.track->setBeatGrid (beats.bpm, beats.firstBeatSeconds);
     }
+
+    if (result.wasOk() && result.track->getWaveform() == nullptr)
+        result.track->setWaveform (WaveformData::build (result.track->getChannel (0), result.track->getChannel (1),
+                                                        result.track->getLength(), result.track->getSampleRate()));
     return result;
 }
 

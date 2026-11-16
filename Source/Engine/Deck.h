@@ -139,6 +139,11 @@ public:
 
     State getState() const;
 
+    /** The track currently loaded on the audio thread, for display (waveform, metadata).
+        Returns nullptr while empty, or while a newer load hasn't reached the audio thread yet.
+        Any non-audio thread. */
+    LoadedTrack::Ptr getDisplayTrack() const;
+
     //==========================================================================
     // Audio thread only (called by AudioEngine)
 
@@ -211,8 +216,8 @@ private:
     std::atomic<float>  trimDb { 0.0f };
 
     mutable juce::SpinLock infoLock;
-    TrackInfo pendingInfo;          // info of the most recently requested load
-    int pendingInfoGeneration = 0;
+    LoadedTrack::Ptr pendingTrack;  // most recently requested load (for display on non-audio threads)
+    int pendingTrackGeneration = 0;
 
     //--- audio-side ----------------------------------------------------------
     double deviceRate = 48000.0;
