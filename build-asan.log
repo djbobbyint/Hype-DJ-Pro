@@ -22,3 +22,23 @@
 [5/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_graphics/juce_graphics.cpp.o
 [6/27] Building C object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.o
 [7/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.o
+[8/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.o
+[9/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.o
+[10/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.o
+[11/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioDeviceController.cpp.o
+[12/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioEngine.cpp.o
+[13/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioFileDecoder.cpp.o
+[14/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/BeatAnalyzer.cpp.o
+[15/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/Deck.cpp.o
+[16/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/FFmpegDecoder.cpp.o
+[17/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/Mixer.cpp.o
+[18/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/SincInterpolator.cpp.o
+[19/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/ThreeBandEq.cpp.o
+[20/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/TimeStretcher.cpp.o
+[21/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/WaveformData.cpp.o
+[22/27] Building CXX object CMakeFiles/hype_engine_tests.dir/Tests/EngineTests.cpp.o
+[23/27] Building CXX object CMakeFiles/hype_engine_tests.dir/Tests/AllocationTracker.cpp.o
+[24/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.o
+[25/27] Linking CXX static library libhype_juce.a
+[26/27] Linking CXX static library libhype_engine.a
+[27/27] Linking CXX executable hype_engine_tests

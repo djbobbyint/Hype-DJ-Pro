@@ -767,8 +767,8 @@ public:
             const double realtimeFactor = 30000.0 / ms;
             logMessage ("    30 s of 2-deck key-lock audio rendered in " + juce::String (ms, 1)
                         + " ms (" + juce::String (realtimeFactor, 1) + "x real time)");
-           #if defined (__SANITIZE_ADDRESS__)
-            expectGreaterThan (realtimeFactor, 1.0);   // sanitizers cost ~10x
+           #if defined (__SANITIZE_ADDRESS__) || defined (__SANITIZE_THREAD__)
+            expectGreaterThan (realtimeFactor, 0.5);   // sanitizers cost 5-15x
            #else
             expectGreaterThan (realtimeFactor, 5.0);
            #endif

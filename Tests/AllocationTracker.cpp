@@ -8,7 +8,7 @@ namespace alloctrack
     std::atomic<long> allocations { 0 };
 }
 
-#if defined (__GLIBC__) && ! defined (__SANITIZE_ADDRESS__)
+#if defined (__GLIBC__) && ! defined (__SANITIZE_ADDRESS__) && ! defined (__SANITIZE_THREAD__)
 // Interpose the C allocator itself, so JUCE's HeapBlock (malloc-based) and operator new
 // (which calls malloc in libstdc++) are both caught.
 extern "C"
@@ -38,6 +38,6 @@ extern "C"
     }
 }
 #else
- // Not glibc, or running under AddressSanitizer (which owns malloc): allocation
+ // Not glibc, or running under Address/ThreadSanitizer (which own malloc): allocation
  // tracking is disabled and the real-time allocation test passes trivially.
 #endif
