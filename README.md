@@ -1,16 +1,24 @@
-# HYPE DJ PRO — Core Audio Engine
+# HYPE DJ PRO
 
-Two-deck, low-latency DJ audio engine in C++17 / JUCE 8. This is the foundation layer:
-playback, transport, tempo/pitch, key lock, mixing, routing and sync. No UI yet; it's driven
-through a C++ API, a command-line host, or offline rendering.
+Two-deck, low-latency DJ application in C++17 / JUCE 8: a real-time audio engine (playback, transport,
+tempo/pitch, key lock, sync), a two-channel DJ mixer with EQ and headphone cue, audio device management with
+disconnect recovery, and a dark professional two-deck interface. Every on-screen control drives the real engine.
 
 ## Build
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-./build/hype_engine_tests          # 150 checks, ~4 s
+./build/hype_engine_tests                                   # engine: 1297 checks, ~10 s
+"./build/HypeDJPro_artefacts/Release/HYPE DJ PRO"           # the app
 ```
+
+Targets: `HypeDJPro` (desktop app; `.app` bundle on macOS), `hype_engine` (static library), `hype_cli`
+(command-line host / offline renderer), `hype_engine_tests`.
+
+**Drivers:** WASAPI and DirectSound on Windows, CoreAudio on macOS, ALSA (+ JACK if `libjack` headers are
+installed) on Linux. **ASIO** needs the Steinberg ASIO SDK, which can't be redistributed: download it and
+configure with `-DHYPE_ASIO_SDK_DIR=C:/path/to/asiosdk`.
 
 Dependencies are fetched by CMake: **JUCE 8.0.4** (or a local checkout in `external/JUCE`) and
 **Signalsmith Stretch 1.4.0**. Linux also needs `libasound2-dev`; FFmpeg dev packages
@@ -88,10 +96,64 @@ with what is actually heard by accounting for the stretcher's latency. The shipp
 Stretch (MIT). A commercial engine (zplane élastique, Rubber Band R3) can be dropped in by implementing the
 6-method interface in `TimeStretcher.h`.
 
-## Mixer / routing
-Channel fader (audio taper) → crossfader (assign A/B/thru; Smooth/Linear/Cut curves) → master gain → limiter.
-PFL cue bus (pre-fader) with cue/master blend and cue gain. Output channels are configurable: master (default 1/2),
-cue (default 3/4), and per-deck direct outs (pre-fader) for external-mixer setups. Any output can be set to −1 (off).
+## Mixer
+```
+deck (post channel GAIN) → 3-band EQ ─┬→ channel fader → crossfader A/B → MASTER bus → master volume → limiter → master outs
+                                       ├→ headphone CUE (pre-fader) → CUE bus → blend with master → phones volume → headphone outs
+                                       └→ direct out (optional, external-mixer mode)
+```
+- **Channel gain** −24…+12 dB, **channel fader** with audio taper, per-channel pre-fader **meters**.
+- **3-band EQ** (Linkwitz-Riley isolator, 250 Hz / 2.5 kHz): flat to ±0.05 dB at unity, each band from full
+  **kill** to +6 dB, plus kill buttons. Changes are smoothed, so they never click.
+- **Crossfader** blends the real deck signals. Its **curve is continuously adjustable**, from a constant-power
+  smooth blend to a scratch cut with ~3% cut-in; there's also a reverse ("hamster") switch.
+- **Master volume** (up to +6 dB) followed by a −0.1 dBFS safety **limiter** (LIMIT indicator). The master
+  **meter** shows peak with hold and a clip LED; RMS is also measured.
+
+## Headphone monitoring
+- CUE button per channel, so either deck **or both** can be cued at once.
+- The cue tap is **pre-fader and independent of the crossfader**. Pre-listening never changes the master; a test
+  checks that the master output is bit-identical with cue on and off.
+- Cue/master mix and headphone volume. **Split cue** puts cue in the left ear and master in the right, for laptops
+  with a single stereo output.
+- Separate **headphone output pair**, assignable to any physical channels of the interface.
+
+## Audio device management (`AudioDeviceController` + Audio Settings panel)
+- Driver type, output device, sample rate, buffer size (shown with its latency in ms), active output channels.
+- **Master output** and **headphone output** assignment as stereo pairs of physical channels (or off). The needed
+  channels are enabled on the device automatically, and the engine maps physical channels to JUCE's packed
+  callback buffers.
+- **Refresh** rescans every driver.
+- **Disconnection recovery.** A watchdog detects a driver error, the device disappearing, or the callback stalling
+  for 2 s. It then optionally falls back to the system default device, and **reconnects automatically** with the
+  same routing when the interface returns. JUCE's own silent switch to the default device is detected and reported
+  as "fallback". If fallback is disabled, nothing plays until the chosen interface is back.
+- The current device, sample rate, buffer, latency and CPU load are shown in the top bar, with a status LED.
+- Settings persist between sessions (`~/.config/HYPE DJ PRO`, `%APPDATA%`, or `~/Library/Application Support`).
+- **Silent clock:** with no output device the engine keeps running in real time on a background thread, so tracks
+  can still be loaded and prepared. It hands over to the device through a lock-free handshake and never renders
+  at the same time as a device callback.
+
+## Interface
+Dark, high-contrast layout: status bar → two full-width scrolling waveforms → Deck A | Mixer | Deck B.
+- **Decks:** title/artist, large BPM (current and original), tempo %, elapsed/remaining/duration, overview
+  waveform with progress, cue marker and click-to-seek, a **jog wheel** that turns with the playhead (drag to nudge
+  while playing, scrub while paused), pitch fader (down = faster) with ±8/16/50/100% range, pitch bend −/+,
+  KEY LOCK, CUE (CDJ behaviour, hold to preview), PLAY/PAUSE, SYNC (tempo and phase match, then tempo lock), LOAD
+  and EJECT, and drag-and-drop loading. Loading onto a playing deck is refused, to protect the live mix.
+- **Waveforms:** real, computed when the track loads and coloured by frequency band (bass red, mids green, highs
+  blue), with beat grid, bar lines, cue marker and a centre playhead. Mouse wheel zooms, drag nudges or scrubs.
+- **Mixer:** everything listed above. All controls re-sync from the engine 10× a second.
+- `--selftest` drives the real widgets by component ID and checks the engine state behind each one (35 checks).
+
+## Performance & real-time design
+- No locks, allocation, file I/O or blocking in the audio callback. A test intercepts `malloc` on the audio thread
+  while every feature runs, including the EQ and the routing.
+- UI → engine: atomics for continuous parameters, wait-free FIFOs for actions. Engine → UI: atomics only.
+- Tracks are decoded and analysed (BPM, beat grid, waveform) on low-priority loader threads, then swapped in with a
+  single pointer exchange. Retired tracks are freed on a housekeeping thread, never on the audio thread.
+- Fades and smoothing everywhere (4 ms de-click crossfades; 20–30 ms parameter ramps), limiter on the master.
+- Denormals are flushed; any device buffer size works (internally ≤512-frame chunks).
 
 ## Command-line host
 
@@ -102,20 +164,29 @@ cue (default 3/4), and per-deck direct outs (pre-fader) for external-mixer setup
 ```
 
 ## Verified (tests)
-Correct pitch and level across sample rates (44.1 kHz file on a 48 kHz device), vinyl and key-lock tempo, key
-shift, pitch range and bend, play/pause/stop, full CDJ cue semantics, seek, end of track, load while playing,
-sample-accurate scheduled start, bit-identical vinyl output at block sizes 1/7/256/333/2048, click-free transport
-in both paths, smoothed fader/crossfader, two decks running independently on separate outputs, fader/trim/crossfader
-gain laws, PFL routing, limiter, BPM detection (96–174 BPM, beat phase within 3 ms), one-shot sync, sync lock,
-quantised start, zero allocations on the audio thread, ~46× real time for two key-locked decks, and decoding of
-WAV/AIFF/FLAC/MP3/AAC plus corrupt and missing files. The suite also passes under AddressSanitizer + UBSan.
+**Engine, 1297 checks:** pitch and level across sample rates; vinyl and key-lock tempo; key shift; pitch range and
+bend; play/pause/stop; CDJ cue; seek; end of track; load while playing; sample-accurate scheduled start; identical
+output for any block size; click-free transport in both playback paths; EQ flat at unity, kills >40 dB, boosts
+accurate, and click-free EQ moves; crossfader curve endpoints, monotonicity and reverse; crossfader blending real
+signals; headphone cue leaving the master bit-identical, independent of fader and crossfader, both decks at once,
+split cue; master volume and meters; limiter; BPM/beat grid; sync, sync lock and quantised start; zero allocations
+on the audio thread; CPU headroom; WAV/AIFF/FLAC/MP3/AAC decoding; waveform analysis.
+
+**Device management, with an in-process fake driver:** enumeration; rate/buffer/channel selection; master and
+headphones landing on the assigned physical outputs; live re-assignment; unplug → fallback → automatic reconnect
+with routing restored; unplug without fallback; stalled-callback detection; driver-error recovery; silent-clock
+handover; XML persistence.
+
+**UI:** `--selftest` (35 checks on the real widgets), screenshots under Xvfb, and a virtual ALSA device opened
+through JUCE's real ALSA backend.
 
 ## Known limitations / next steps
 - Developed and tested on Linux without audio hardware (offline rendering only). Live latency and xrun behaviour
   on real interfaces, and the macOS/Windows decoder paths, still need hardware testing.
 - The beat analyser assumes a constant tempo. Variable-tempo tracks need a full beat tracker.
 - Sync lock matches tempo continuously; phase is aligned on engage/quantised start only (no ongoing phase correction).
-- No loops, hot cues, EQ/filters, scratching/jog or GUI yet. The deck design (stateless sinc reader, tail
-  crossfade, sample-accurate commands) is meant to support them.
+- No loops, hot cues, filter FX, scratching (the jog nudges/scrubs), library browser or MIDI controller support yet.
+- The GUI was verified under a virtual X server (screenshots and the `--selftest` run) and with a virtual ALSA
+  device. It has not been tried on a physical interface, or on macOS/Windows.
 - **Licensing:** JUCE 8 is AGPLv3 or commercial. A closed-source product needs a JUCE licence. FFmpeg is
   LGPL and must stay dynamically linked. Signalsmith Stretch is MIT.

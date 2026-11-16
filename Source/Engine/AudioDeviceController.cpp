@@ -35,10 +35,7 @@ juce::StringArray AudioDeviceController::getDeviceNames (const juce::String& typ
 {
     for (auto* type : deviceManager.getAvailableDeviceTypes())
         if (type->getTypeName() == typeName)
-        {
-            type->scanForDevices();
             return type->getDeviceNames (false);
-        }
     return {};
 }
 
@@ -54,6 +51,13 @@ juce::StringArray AudioDeviceController::getOutputChannelNames() const
 {
     if (auto* device = deviceManager.getCurrentAudioDevice())
         return device->getOutputChannelNames();
+    return {};
+}
+
+juce::BigInteger AudioDeviceController::getActiveOutputChannels() const
+{
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+        return device->getActiveOutputChannels();
     return {};
 }
 
@@ -147,10 +151,17 @@ void AudioDeviceController::setWatchdogEnabled (bool shouldRun)
 //==============================================================================
 juce::String AudioDeviceController::openDevice (const juce::String& typeName, const juce::String& deviceName, bool isFallback)
 {
+    const auto& types = deviceManager.getAvailableDeviceTypes();   // creates the driver types on first use
+
     if (typeName.isNotEmpty() && deviceManager.getCurrentAudioDeviceType() != typeName)
         deviceManager.setCurrentAudioDeviceType (typeName, true);
 
     auto* type = deviceManager.getCurrentDeviceTypeObject();
+    if (type == nullptr && typeName.isEmpty() && ! types.isEmpty())
+    {
+        deviceManager.setCurrentAudioDeviceType (types.getFirst()->getTypeName(), true);
+        type = deviceManager.getCurrentDeviceTypeObject();
+    }
     if (type == nullptr)
         return "Audio driver type \"" + typeName + "\" is not available";
 
@@ -378,7 +389,7 @@ AudioDeviceController::Status AudioDeviceController::getStatus() const
     }
     else
     {
-        s.typeName = settings.typeName;
+        s.typeName = settings.typeName.isNotEmpty() ? settings.typeName : deviceManager.getCurrentAudioDeviceType();
         s.deviceName = settings.deviceName;
     }
     return s;

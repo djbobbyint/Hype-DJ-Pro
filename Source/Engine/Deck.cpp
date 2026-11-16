@@ -219,6 +219,7 @@ Deck::State Deck::getState() const
     s.originalBpm    = pubBpm.load();
     s.currentBpm     = s.originalBpm * s.effectiveSpeed;
 
+    s.firstBeatSeconds = pubFirstBeat.load();
     if (s.originalBpm > 0.0 && rate > 0.0)
     {
         const double beats = (p / rate - pubFirstBeat.load()) * s.originalBpm / 60.0;

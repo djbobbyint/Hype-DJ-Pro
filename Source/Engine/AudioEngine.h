@@ -71,6 +71,7 @@ public:
     //--- decks / mixer --------------------------------------------------------
     Deck&  getDeck (int index) noexcept       { return *decks[(size_t) index]; }
     Mixer& getMixer() noexcept                { return mixer; }
+    const Mixer& getMixer() const noexcept    { return mixer; }
 
     //--- loading --------------------------------------------------------------
     /** Decodes + analyses on a background thread, then swaps the track into the deck.
@@ -93,6 +94,8 @@ public:
     bool setSyncLock (int slave, int master);
     /** Tempo-syncs `slave`, moves it to its nearest beat and starts it exactly on `master`'s next beat. */
     bool playInSync (int slave, int master);
+    /** The deck `slave` is tempo-locked to, or -1. Any thread. */
+    int getSyncLockMaster (int slave) const noexcept { return publishedSyncMaster[slave].load (std::memory_order_relaxed); }
 
     int64_t getSampleClock() const noexcept   { return sampleClock.load (std::memory_order_acquire); }
     double  getSampleRate() const noexcept    { return currentSampleRate.load(); }
@@ -104,6 +107,12 @@ public:
 
     /** Releases retired tracks. Called periodically by the housekeeping thread; exposed for offline use. */
     void collectGarbage();
+
+    /** When enabled, a background thread drives the engine in real time (output discarded)
+        whenever no audio device is running, so loading, transport and the UI keep working
+        without an output device. It never renders at the same time as a device callback. */
+    void setSilentClockEnabled (bool shouldRun);
+    bool isRunningOnSilentClock() const noexcept   { return silentClockEnabled.load() && ! deviceActive.load(); }
 
     /** Incremented on every device callback; lets a watchdog detect a stalled device. */
     uint32_t getCallbackCount() const noexcept     { return callbackCounter.load (std::memory_order_relaxed); }
@@ -131,6 +140,7 @@ private:
     static double matchTempoRatio (double ratio) noexcept;
 
     class Housekeeper;
+    class SilentClock;
     class LoadJob;
 
     juce::AudioDeviceManager deviceManager;
@@ -143,6 +153,7 @@ private:
 
     // audio-thread state
     int syncMaster[config::numDecks];
+    std::atomic<int> publishedSyncMaster[config::numDecks];
     int64_t scheduledPlay[config::numDecks];
     juce::AudioBuffer<float> deckBuffers;
     float* chunkOutputs[maxOutputChannels] {};
@@ -156,11 +167,14 @@ private:
     std::atomic<double>  currentSampleRate { 48000.0 };
 
     // loading
-    juce::ThreadPool loaderPool { juce::ThreadPoolOptions{}.withThreadName ("HYPE loader").withNumberOfThreads (2) };
+    juce::ThreadPool loaderPool { juce::ThreadPoolOptions{}.withThreadName ("HYPE loader").withNumberOfThreads (2)
+                                                         .withDesiredThreadPriority (juce::Thread::Priority::low) };
     juce::SpinLock loadLock;
     std::shared_ptr<std::atomic<bool>> activeLoadCancel[config::numDecks];
 
     std::unique_ptr<Housekeeper> housekeeper;
+    std::unique_ptr<SilentClock> silentClock;
+    std::atomic<bool> silentClockEnabled { false }, deviceActive { false }, silentRendering { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioEngine)
 };

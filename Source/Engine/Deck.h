@@ -104,6 +104,7 @@ public:
     double getPitchFader() const noexcept  { return pitchFader.load(); }
     double getTempoRatio() const noexcept  { return baseSpeed.load(); }
     bool   isKeyLockOn() const noexcept    { return keyLock.load(); }
+    float  getTrimDb() const noexcept      { return trimDb.load(); }
 
     //==========================================================================
     struct State
@@ -132,6 +133,7 @@ public:
         double originalBpm      = 0.0;      // 0 = unknown
         double currentBpm       = 0.0;      // originalBpm * effectiveSpeed
         double beatPhase        = 0.0;      // 0..1 position within the current beat
+        double firstBeatSeconds = 0.0;      // beat grid anchor (assumed downbeat)
 
         float  peakLeft = 0.0f, peakRight = 0.0f;  // since last getState() call
         int    trackGeneration = 0;

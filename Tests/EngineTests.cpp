@@ -1320,6 +1320,41 @@ public:
             expect (! rig.engine.hasDeviceError());
         }
 
+        beginTest ("Silent clock keeps the engine running without a device, and hands over cleanly");
+        {
+            Rig rig;
+            rig.engine.prepareToPlay (48000.0);
+            rig.engine.getDeck (0).loadTrack (makeTrack (sine (440.0, 30.0, 48000.0, 0.3f), 48000.0));
+            rig.engine.getDeck (0).play();
+            rig.engine.setSilentClockEnabled (true);
+            expect (rig.engine.isRunningOnSilentClock());
+            juce::Thread::sleep (600);
+            const double t1 = rig.engine.getDeck (0).getState().elapsedSeconds;
+            expectWithinAbsoluteError (t1, 0.6, 0.25, "advances in real time");
+
+            // Opening a device takes over: from now on only device callbacks advance the playhead.
+            AudioDeviceController::Settings s;
+            s.typeName = FakeAudioDeviceType::typeName;
+            s.deviceName = "Fake Interface 8ch";
+            expectEquals (rig.controller->apply (s), juce::String());
+            expect (! rig.engine.isRunningOnSilentClock());
+            const double t2 = rig.engine.getDeck (0).getState().elapsedSeconds;
+            juce::Thread::sleep (300);
+            expectWithinAbsoluteError (rig.engine.getDeck (0).getState().elapsedSeconds, t2, 1e-9, "silent clock idle");
+            rig.device()->pump (94);   // ~0.5 s
+            expectWithinAbsoluteError (rig.engine.getDeck (0).getState().elapsedSeconds - t2, 0.5, 0.02);
+
+            // Device stops (unplugged, no fallback): the silent clock resumes.
+            rig.controller->setFallbackToDefaultDevice (false);
+            rig.fake->setPlugged ("Fake Interface 8ch", false);
+            rig.controller->poll();
+            expect (rig.engine.isRunningOnSilentClock());
+            const double t3 = rig.engine.getDeck (0).getState().elapsedSeconds;
+            juce::Thread::sleep (400);
+            expectGreaterThan (rig.engine.getDeck (0).getState().elapsedSeconds, t3 + 0.2);
+            rig.engine.setSilentClockEnabled (false);
+        }
+
         beginTest ("Settings persist through XML");
         {
             std::unique_ptr<juce::XmlElement> xml;

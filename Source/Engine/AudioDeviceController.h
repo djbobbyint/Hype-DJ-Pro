@@ -59,12 +59,15 @@ public:
 
     //--- enumeration ---------------------------------------------------------
     juce::StringArray getDeviceTypes() const;
+    /** Devices found by the last scan (see refreshDevices()). */
     juce::StringArray getDeviceNames (const juce::String& typeName) const;
     /** Rescans every driver type for devices (e.g. after plugging in an interface). */
     void refreshDevices();
 
     /** Output channel names of the open device (e.g. "Out 1", "Out 2"...). */
     juce::StringArray getOutputChannelNames() const;
+    /** Output channels currently enabled on the open device. */
+    juce::BigInteger getActiveOutputChannels() const;
     juce::Array<double> getAvailableSampleRates() const;
     juce::Array<int> getAvailableBufferSizes() const;
 
@@ -74,6 +77,8 @@ public:
     /** Changes only the output assignment (no device restart unless a channel must be enabled). */
     juce::String setOutputAssignment (int masterFirstChannel, int cueFirstChannel);
     void closeDevice();
+    /** Recovery policy only; doesn't touch the running device. */
+    void setFallbackToDefaultDevice (bool shouldFallBack) { settings.fallbackToDefaultDevice = shouldFallBack; }
 
     const Settings& getSettings() const noexcept { return settings; }
     Status getStatus() const;

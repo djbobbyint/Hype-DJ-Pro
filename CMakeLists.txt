@@ -61,9 +61,70 @@ if(HYPE_ENABLE_FFMPEG)
 endif()
 
 # ---------------------------------------------------------------------------
+# All JUCE modules, compiled once into one static library shared by the engine,
+# the app, the CLI host and the tests (avoids compiling juce_core twice).
+# ---------------------------------------------------------------------------
+add_library(hype_juce STATIC)
+
+target_compile_definitions(hype_juce
+    PUBLIC
+        JUCE_STANDALONE_APPLICATION=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_MP3AUDIOFORMAT=1
+        JUCE_USE_FLAC=1
+        JUCE_USE_OGGVORBIS=1
+        JUCE_USE_WINDOWS_MEDIA_FORMAT=1
+        JUCE_WASAPI=1
+        JUCE_DIRECTSOUND=1
+        JUCE_MODAL_LOOPS_PERMITTED=0
+        JUCE_APPLICATION_NAME_STRING="HYPE DJ PRO"
+        JUCE_APPLICATION_VERSION_STRING="${PROJECT_VERSION}")
+
+target_link_libraries(hype_juce
+    PRIVATE
+        juce::juce_core
+        juce::juce_events
+        juce::juce_data_structures
+        juce::juce_graphics
+        juce::juce_gui_basics
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+        juce::juce_audio_devices
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+
+# ASIO (Windows): needs the Steinberg ASIO SDK, which can't be redistributed.
+set(HYPE_ASIO_SDK_DIR "" CACHE PATH "Path to the Steinberg ASIO SDK (enables ASIO on Windows)")
+if(WIN32 AND HYPE_ASIO_SDK_DIR)
+    target_compile_definitions(hype_juce PUBLIC JUCE_ASIO=1)
+    target_include_directories(hype_juce PRIVATE "${HYPE_ASIO_SDK_DIR}/common")
+    message(STATUS "HYPE: ASIO enabled (${HYPE_ASIO_SDK_DIR})")
+endif()
+
+# JACK (Linux), if the headers are installed.
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(JACK QUIET jack)
+        if(JACK_FOUND)
+            target_compile_definitions(hype_juce PUBLIC JUCE_JACK=1)
+            target_include_directories(hype_juce PRIVATE ${JACK_INCLUDE_DIRS})
+        endif()
+    endif()
+endif()
+
+# Re-export the JUCE include paths and definitions to consumers.
+target_include_directories(hype_juce INTERFACE $<TARGET_PROPERTY:hype_juce,INCLUDE_DIRECTORIES>)
+target_compile_definitions(hype_juce INTERFACE $<TARGET_PROPERTY:hype_juce,COMPILE_DEFINITIONS>)
+
+# ---------------------------------------------------------------------------
 # Core engine library
 # ---------------------------------------------------------------------------
 add_library(hype_engine STATIC
+    Source/Engine/AudioDeviceController.cpp
+    Source/Engine/AudioDeviceController.h
     Source/Engine/AudioEngine.cpp
     Source/Engine/AudioEngine.h
     Source/Engine/AudioFileDecoder.cpp
@@ -83,49 +144,53 @@ add_library(hype_engine STATIC
     Source/Engine/SpscQueue.h
     Source/Engine/ThreeBandEq.cpp
     Source/Engine/ThreeBandEq.h
-    Source/Engine/WaveformData.cpp
-    Source/Engine/WaveformData.h
-    Source/Engine/AudioDeviceController.cpp
-    Source/Engine/AudioDeviceController.h
     Source/Engine/TimeStretcher.cpp
-    Source/Engine/TimeStretcher.h)
+    Source/Engine/TimeStretcher.h
+    Source/Engine/WaveformData.cpp
+    Source/Engine/WaveformData.h)
 
 target_include_directories(hype_engine PUBLIC Source)
-
-target_compile_definitions(hype_engine
-    PUBLIC
-        JUCE_STANDALONE_APPLICATION=1
-        JUCE_USE_CURL=0
-        JUCE_WEB_BROWSER=0
-        JUCE_USE_MP3AUDIOFORMAT=1
-        JUCE_USE_FLAC=1
-        JUCE_USE_OGGVORBIS=1
-        JUCE_USE_WINDOWS_MEDIA_FORMAT=1
-        JUCE_MODAL_LOOPS_PERMITTED=0
-        HYPE_HAS_FFMPEG=${HYPE_HAS_FFMPEG})
-
-target_link_libraries(hype_engine
-    PRIVATE
-        juce::juce_core
-        juce::juce_events
-        juce::juce_audio_basics
-        juce::juce_audio_formats
-        juce::juce_audio_devices
-        signalsmith-stretch
-    PUBLIC
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_warning_flags)
+target_compile_definitions(hype_engine PUBLIC HYPE_HAS_FFMPEG=${HYPE_HAS_FFMPEG})
+target_link_libraries(hype_engine PUBLIC hype_juce PRIVATE signalsmith-stretch)
 
 if(HYPE_HAS_FFMPEG)
     target_link_libraries(hype_engine PRIVATE PkgConfig::FFMPEG)
 endif()
 
-# JUCE modules are compiled into hype_engine; re-export their include paths and
-# definitions so consumers can include JUCE headers without compiling JUCE twice.
-target_include_directories(hype_engine INTERFACE
-    $<TARGET_PROPERTY:hype_engine,INCLUDE_DIRECTORIES>)
-target_compile_definitions(hype_engine INTERFACE
-    $<TARGET_PROPERTY:hype_engine,COMPILE_DEFINITIONS>)
+# ---------------------------------------------------------------------------
+# Desktop application
+# ---------------------------------------------------------------------------
+option(HYPE_BUILD_APP "Build the HYPE DJ PRO desktop application" ON)
+if(HYPE_BUILD_APP)
+    juce_add_gui_app(HypeDJPro
+        PRODUCT_NAME "HYPE DJ PRO"
+        COMPANY_NAME "HYPE"
+        BUNDLE_ID    "com.hype.djpro"
+        MICROPHONE_PERMISSION_ENABLED FALSE)
+
+    target_sources(HypeDJPro PRIVATE
+        Source/App/AudioSettingsComponent.cpp
+        Source/App/AudioSettingsComponent.h
+        Source/App/DeckComponent.cpp
+        Source/App/DeckComponent.h
+        Source/App/HypeLookAndFeel.cpp
+        Source/App/HypeLookAndFeel.h
+        Source/App/JogWheel.cpp
+        Source/App/JogWheel.h
+        Source/App/Main.cpp
+        Source/App/MainComponent.cpp
+        Source/App/MainComponent.h
+        Source/App/MixerComponent.cpp
+        Source/App/MixerComponent.h
+        Source/App/WaveformViews.cpp
+        Source/App/WaveformViews.h
+        Source/App/UiSelfTest.cpp
+        Source/App/UiSelfTest.h
+        Source/App/Widgets.cpp
+        Source/App/Widgets.h)
+
+    target_link_libraries(HypeDJPro PRIVATE hype_engine)
+endif()
 
 # ---------------------------------------------------------------------------
 # Command-line host

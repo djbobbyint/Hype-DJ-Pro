@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <limits>
+#include <thread>
 
 namespace hype
 {
@@ -18,6 +19,49 @@ public:
         {
             engine.collectGarbage();
             wait (50);
+        }
+    }
+
+private:
+    AudioEngine& engine;
+};
+
+//==============================================================================
+/** Drives the engine in real time while no device is running (see setSilentClockEnabled). */
+class AudioEngine::SilentClock : public juce::Thread
+{
+public:
+    explicit SilentClock (AudioEngine& e) : juce::Thread ("HYPE silent clock"), engine (e) {}
+
+    void run() override
+    {
+        juce::AudioBuffer<float> scratch (2, config::maxInternalBlock);
+        double nextDeadline = juce::Time::getMillisecondCounterHiRes();
+
+        while (! threadShouldExit())
+        {
+            if (! engine.silentClockEnabled.load() || engine.deviceActive.load())
+            {
+                wait (20);
+                nextDeadline = juce::Time::getMillisecondCounterHiRes();
+                continue;
+            }
+
+            const double sr = engine.currentSampleRate.load();
+            const int n = juce::jmin (config::maxInternalBlock, (int) (sr * 0.01));   // ~10 ms blocks
+
+            // Dekker-style handshake with audioDeviceAboutToStart(): announce, then re-check.
+            engine.silentRendering.store (true);
+            if (! engine.deviceActive.load())
+                engine.renderBlock (scratch.getArrayOfWritePointers(), 2, n, nullptr, 2);
+            engine.silentRendering.store (false);
+
+            nextDeadline += 1000.0 * n / sr;
+            const double now = juce::Time::getMillisecondCounterHiRes();
+            if (nextDeadline < now - 100.0)
+                nextDeadline = now;   // fell behind (e.g. system sleep): don't try to catch up
+            else if (nextDeadline > now)
+                wait ((int) std::ceil (nextDeadline - now));
         }
     }
 
@@ -70,6 +114,7 @@ AudioEngine::AudioEngine()
     {
         decks[(size_t) d] = std::make_unique<Deck> (d);
         syncMaster[d] = -1;
+        publishedSyncMaster[d].store (-1);
         scheduledPlay[d] = -1;
     }
 
@@ -81,6 +126,8 @@ AudioEngine::AudioEngine()
 
     housekeeper = std::make_unique<Housekeeper> (*this);
     housekeeper->startThread (juce::Thread::Priority::low);
+
+    silentClock = std::make_unique<SilentClock> (*this);
 }
 
 AudioEngine::~AudioEngine()
@@ -95,6 +142,7 @@ AudioEngine::~AudioEngine()
     }
     loaderPool.removeAllJobs (true, 10000);
 
+    silentClock->stopThread (2000);
     housekeeper->stopThread (2000);
     collectGarbage();
 }
@@ -166,8 +214,20 @@ AudioEngine::DeviceStatus AudioEngine::getDeviceStatus() const
     return s;
 }
 
+void AudioEngine::setSilentClockEnabled (bool shouldRun)
+{
+    silentClockEnabled.store (shouldRun);
+    if (shouldRun && ! silentClock->isThreadRunning())
+        silentClock->startThread (juce::Thread::Priority::high);
+}
+
 void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
 {
+    // Take over from the silent clock: claim the engine, then wait for any render in flight.
+    deviceActive.store (true);
+    while (silentRendering.load())
+        std::this_thread::yield();
+
     // JUCE passes only the *active* output channels, packed in order. Build the map from
     // physical channel number (what the routing uses) to packed index.
     const auto active = device->getActiveOutputChannels();
@@ -180,7 +240,10 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
     deviceErrorFlag.store (false);
 }
 
-void AudioEngine::audioDeviceStopped() {}
+void AudioEngine::audioDeviceStopped()
+{
+    deviceActive.store (false);   // the silent clock (if enabled) takes over
+}
 
 void AudioEngine::audioDeviceError (const juce::String& message)
 {
@@ -461,6 +524,8 @@ void AudioEngine::applyEngineCommand (const EngineCommand& c) noexcept
             syncMaster[c.slave] = c.master;
             if (c.master >= 0)
                 syncAudio (c.slave, c.master, false);
+            for (int d = 0; d < config::numDecks; ++d)
+                publishedSyncMaster[d].store (syncMaster[d], std::memory_order_relaxed);
             break;
 
         case EngineCommandType::PlayInSync:
