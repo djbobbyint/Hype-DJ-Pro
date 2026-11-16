@@ -4,25 +4,41 @@ Two-deck, low-latency DJ application in C++17 / JUCE 8: a real-time audio engine
 tempo/pitch, key lock, sync), a two-channel DJ mixer with EQ and headphone cue, audio device management with
 disconnect recovery, and a dark professional two-deck interface. Every on-screen control drives the real engine.
 
+## Phase 1 status
+
+| Success criterion | Status |
+|---|---|
+| Two different music tracks can be loaded | ✅ automated (MP3 + FLAC; AAC via FFmpeg) |
+| Both tracks play simultaneously | ✅ automated |
+| Independent playback controls per deck | ✅ automated + UI self-test |
+| Crossfader blends the two actual audio signals | ✅ automated (sample-exact superposition) |
+| EQ and volume controls work | ✅ automated |
+| Headphone monitoring independent of the master | ✅ automated (master bit-identical with/without cue) |
+| Audio device selection works | ✅ automated on a simulated interface + Linux ALSA; ⏳ **needs a real Windows interface** |
+| Playback stable during extended testing | ✅ 30-minute and 4-hour automated soaks; ⏳ **`--soak` on real hardware** |
+
+See **[docs/TESTING.md](docs/TESTING.md)** for the 13-item automated suite, results per platform and the manual
+hardware procedure. The Windows x64 build passes the full Phase 1 suite (under Wine). Its GUI hasn't been seen
+running yet, because Wine can't display it headlessly, so it needs a check on a Windows PC.
+
 ## Build
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-./build/hype_engine_tests                                   # engine: 1297 checks, ~10 s
+./build/hype_phase1_tests                                   # Phase 1 acceptance: 13 items, ~1 min
+./build/hype_engine_tests                                   # engine: 1297 checks
 "./build/HypeDJPro_artefacts/Release/HYPE DJ PRO"           # the app
+scripts/build-windows.sh                                    # Windows x64 package (cross-build)
 ```
 
-Targets: `HypeDJPro` (desktop app; `.app` bundle on macOS), `hype_engine` (static library), `hype_cli`
-(command-line host / offline renderer), `hype_engine_tests`.
+Details for Linux, Windows (cross and Visual Studio), macOS and ASIO: **[docs/BUILDING.md](docs/BUILDING.md)**.
 
-**Drivers:** WASAPI and DirectSound on Windows, CoreAudio on macOS, ALSA (+ JACK if `libjack` headers are
-installed) on Linux. **ASIO** needs the Steinberg ASIO SDK, which can't be redistributed: download it and
-configure with `-DHYPE_ASIO_SDK_DIR=C:/path/to/asiosdk`.
+Targets: `HypeDJPro` (desktop app), `hype_engine` (static library), `hype_cli` (command-line host / offline
+renderer), `hype_engine_tests`, `hype_phase1_tests`.
 
-Dependencies are fetched by CMake: **JUCE 8.0.4** (or a local checkout in `external/JUCE`) and
-**Signalsmith Stretch 1.4.0**. Linux also needs `libasound2-dev`; FFmpeg dev packages
-(`libavformat-dev libavcodec-dev libswresample-dev libavutil-dev`) are optional (`-DHYPE_ENABLE_FFMPEG=OFF`).
+**Drivers:** WASAPI (shared / exclusive / low latency) and DirectSound on Windows, CoreAudio on macOS, ALSA
+(+ JACK if `libjack` headers are installed) on Linux. **ASIO** needs the Steinberg SDK: `-DHYPE_ASIO_SDK_DIR=...`.
 
 ## Formats
 
@@ -30,7 +46,7 @@ Dependencies are fetched by CMake: **JUCE 8.0.4** (or a local checkout in `exter
 |---|---|---|---|
 | WAV / AIFF / FLAC / Ogg | JUCE | JUCE | JUCE |
 | MP3 | JUCE | JUCE | JUCE |
-| AAC / M4A / ALAC | FFmpeg (optional) | CoreAudio | Media Foundation |
+| AAC / M4A / ALAC / Opus | FFmpeg (optional) | CoreAudio | bundled FFmpeg DLLs (LGPL) |
 
 Tracks are decoded completely into RAM (32-bit float, native sample rate) on a background thread, then
 beat-analysed. That gives instant, sample-exact seeking and cueing. The cost is ~10 MB per stereo minute
@@ -171,6 +187,10 @@ Dark, high-contrast layout: status bar → two full-width scrolling waveforms �
 ```
 
 ## Verified (tests)
+**Phase 1 acceptance, 13 items / 483 checks** (`hype_phase1_tests`): see [docs/TESTING.md](docs/TESTING.md).
+Passes on Linux, under ThreadSanitizer, and with the Windows build under Wine. Soak runs: 30 min and 4 h of audio
+under continuous automation, with 0 clicks, 0 NaN, 0 overs and 0 audio-thread allocations.
+
 **Engine, 1297 checks:** pitch and level across sample rates; vinyl and key-lock tempo; key shift; pitch range and
 bend; play/pause/stop; CDJ cue; seek; end of track; load while playing; sample-accurate scheduled start; identical
 output for any block size; click-free transport in both playback paths; EQ flat at unity, kills >40 dB, boosts
@@ -188,12 +208,17 @@ handover; XML persistence.
 through JUCE's real ALSA backend.
 
 ## Known limitations / next steps
-- Developed and tested on Linux without audio hardware (offline rendering only). Live latency and xrun behaviour
-  on real interfaces, and the macOS/Windows decoder paths, still need hardware testing.
-- The beat analyser assumes a constant tempo. Variable-tempo tracks need a full beat tracker.
-- Sync lock matches tempo continuously; phase is aligned on engage/quantised start only (no ongoing phase correction).
-- No loops, hot cues, filter FX, scratching (the jog nudges/scrubs), library browser or MIDI controller support yet.
-- The GUI was verified under a virtual X server (screenshots and the `--selftest` run) and with a virtual ALSA
-  device. It has not been tried on a physical interface, or on macOS/Windows.
-- **Licensing:** JUCE 8 is AGPLv3 or commercial. A closed-source product needs a JUCE licence. FFmpeg is
-  LGPL and must stay dynamically linked. Signalsmith Stretch is MIT.
+- **No real audio hardware has been used yet.** Device handling, latency and xruns were tested with a simulated
+  interface, a virtual ALSA device and Wine. Follow the manual procedure in docs/TESTING.md (including `--soak`) on a
+  real interface before calling Phase 1 complete.
+- **Windows:** the delivered build is cross-compiled (Clang + mingw-w64). Its engine and Phase 1 tests pass under
+  Wine, but its GUI couldn't be displayed there (Wine's headless DXGI never delivers a vertical blank, which JUCE 8
+  windows wait on). It needs a first check on a real Windows PC. A native Visual Studio build is documented but
+  hasn't been built here.
+- No ASIO in the delivered build (the Steinberg SDK can't be redistributed); WASAPI, including exclusive and
+  low-latency modes, and DirectSound are included.
+- The beat analyser assumes a constant tempo. Sync lock matches tempo continuously; phase is aligned on
+  engage/quantised start only.
+- Out of scope for Phase 1, by design: four decks, MIDI, effects, loops/hot cues, library browser, scratching.
+- **Licensing:** JUCE 8 is AGPLv3 or commercial; a closed-source product needs a JUCE licence. FFmpeg is LGPL and is
+  shipped as separate replaceable DLLs. Signalsmith Stretch is MIT. See packaging/windows/THIRD-PARTY-NOTICES.txt.

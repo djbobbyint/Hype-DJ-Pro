@@ -12,8 +12,9 @@ public:
     void initialise (const juce::String& commandLine) override
     {
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
+        const auto args = juce::StringArray::fromTokens (commandLine, true);
         window = std::make_unique<MainWindow>();
-        window->main->handleCommandLine (juce::StringArray::fromTokens (commandLine, true));
+        window->main->handleCommandLine (args);
     }
 
     void shutdown() override

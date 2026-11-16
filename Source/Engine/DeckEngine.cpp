@@ -274,6 +274,10 @@ void DeckEngine::prepare (double sampleRate)
     stretcher->prepare (sampleRate, 2);
     stretcherPrimed = false;
 
+    resampleCapacity = stretcher->getPrimeLength (config::maxSpeed) + 8 * config::stretchChunk + 64;
+    resampledInput.setSize (2, resampleCapacity);
+    resampleIncrements.allocate ((size_t) resampleCapacity, false);
+
     speedSmoothed.reset (sampleRate, config::speedSmoothingSeconds);
     speedSmoothed.setCurrentAndTargetValue (computeTargetSpeed (true));
 }
@@ -714,19 +718,54 @@ void DeckEngine::renderVinyl (float* left, float* right, int numSamples)
                           interpolator.chooseKernel (maxInc));
 }
 
+namespace
+{
+    bool needsResampling (double srRatio) noexcept { return std::abs (srRatio - 1.0) > 1.0e-9; }
+}
+
+StereoSource DeckEngine::makeResampledInput (double& sourcePosition, int count, double srRatio) noexcept
+{
+    count = juce::jlimit (0, resampleCapacity, count);
+    for (int i = 0; i < count; ++i)
+        resampleIncrements[i] = (float) srRatio;
+
+    interpolator.process (track->getChannel (0), track->getChannel (1), track->getLength(),
+                          sourcePosition, resampleIncrements.get(),
+                          resampledInput.getWritePointer (0), resampledInput.getWritePointer (1),
+                          count, interpolator.chooseKernel (srRatio));
+
+    StereoSource src;
+    src.channels[0] = resampledInput.getReadPointer (0);
+    src.channels[1] = resampledInput.getReadPointer (1);
+    src.length = count;
+    return src;
+}
+
 void DeckEngine::primeStretcher()
 {
     const double srRatio = track->getSampleRate() / deviceRate;
-    const double rate = juce::jmax (config::minStretchRate, speedSmoothed.getCurrentValue()) * srRatio;
-    const int length = stretcher->getPrimeLength (rate);
-    const auto start = (int64_t) std::llround (pos);
-
+    const double speed = juce::jmax (config::minStretchRate, speedSmoothed.getCurrentValue());
     const double keyRatio = std::pow (2.0, keyShift.load() / 12.0);
-    stretcher->setTransposeFactor (keyLock.load() ? keyRatio * srRatio : rate * keyRatio);
-    stretcher->prime (sourceView(), start, length);
 
-    pos = (double) start;
-    feedPos = start + length;
+    // The stretcher always works at the device rate: transposition is purely musical.
+    stretcher->setTransposeFactor (keyLock.load() ? keyRatio : speed * keyRatio);
+
+    if (! needsResampling (srRatio))
+    {
+        const int length = stretcher->getPrimeLength (speed);
+        const auto start = (int64_t) std::llround (pos);
+        stretcher->prime (sourceView(), start, length);
+        pos = (double) start;
+        feedSrcPos = (double) (start + length);
+    }
+    else
+    {
+        const int length = juce::jmin (stretcher->getPrimeLength (speed), resampleCapacity);
+        double p = pos;
+        const auto input = makeResampledInput (p, length, srRatio);
+        stretcher->prime (input, 0, length);
+        feedSrcPos = p;
+    }
     stretcherPrimed = true;
 }
 
@@ -736,6 +775,7 @@ void DeckEngine::renderKeyLock (float* left, float* right, int numSamples)
         primeStretcher();
 
     const double srRatio = track->getSampleRate() / deviceRate;
+    const bool resample = needsResampling (srRatio);
     const double keyRatio = std::pow (2.0, keyShift.load (std::memory_order_relaxed) / 12.0);
     const bool lockKey = keyLock.load (std::memory_order_relaxed);
     const auto source = sourceView();
@@ -749,24 +789,33 @@ void DeckEngine::renderKeyLock (float* left, float* right, int numSamples)
         double speedSum = 0.0;
         for (int i = 0; i < n; ++i)
             speedSum += speedSmoothed.getNextValue();
-
         const double speed = juce::jmax (config::minStretchRate, speedSum / n);
-        const double rate = speed * srRatio;          // source samples per output sample
 
-        // Output frequency = input frequency * transpose, measured at the device rate.
-        // Key lock: original key (only the source/device rate difference is compensated).
-        // Otherwise: pitch follows tempo, plus the key shift.
-        stretcher->setTransposeFactor (lockKey ? keyRatio * srRatio : rate * keyRatio);
+        // Key lock: original key. Otherwise: pitch follows tempo, plus the key shift.
+        stretcher->setTransposeFactor (lockKey ? keyRatio : speed * keyRatio);
 
-        pos += rate * n;
+        // The playhead (source domain) advances by speed * srRatio per output sample.
+        pos += speed * srRatio * n;
 
-        // Keep the input "lead" equal to the stretcher's latency at this rate, so the
-        // playhead we report is the one being heard.
-        const auto targetFeed = (int64_t) std::llround (pos + inLatency + rate * outLatency);
-        const int inputCount = (int) juce::jmax<int64_t> (0, targetFeed - feedPos);
+        // Keep the input lead equal to the stretcher latency (device-rate samples), so the
+        // reported playhead is the one being heard.
+        const double leadSource = (inLatency + speed * outLatency) * srRatio;
 
-        stretcher->process (source, feedPos, inputCount, left + offset, right + offset, n);
-        feedPos += inputCount;
+        if (! resample)
+        {
+            const auto targetFeed = (int64_t) std::llround (pos + leadSource);
+            const auto feed = (int64_t) feedSrcPos;
+            const int inputCount = (int) juce::jmax<int64_t> (0, targetFeed - feed);
+            stretcher->process (source, feed, inputCount, left + offset, right + offset, n);
+            feedSrcPos = (double) (feed + inputCount);
+        }
+        else
+        {
+            const int inputCount = juce::jlimit (0, resampleCapacity,
+                                                 (int) std::llround ((pos + leadSource - feedSrcPos) / srRatio));
+            const auto input = makeResampledInput (feedSrcPos, inputCount, srRatio);
+            stretcher->process (input, 0, inputCount, left + offset, right + offset, n);
+        }
     }
 }
 } // namespace hype

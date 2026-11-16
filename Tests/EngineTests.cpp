@@ -1450,6 +1450,13 @@ WaveformTests       waveformTests;
 int main (int argc, char** argv)
 {
     juce::MessageManager::getInstance();   // the device manager needs a message thread (this one)
+
+    // Test logs to stdout on every platform (JUCE's default logger uses the debugger on Windows).
+    struct StdoutLogger : juce::Logger
+    {
+        void logMessage (const juce::String& m) override { std::cout << m << std::endl; }
+    } stdoutLogger;
+    juce::Logger::setCurrentLogger (&stdoutLogger);
     juce::UnitTestRunner runner;
     runner.setAssertOnFailure (false);
 
@@ -1475,6 +1482,7 @@ int main (int argc, char** argv)
     }
 
     std::cout << "\n==== " << passes << " checks passed, " << failures << " failed ====\n";
+    juce::Logger::setCurrentLogger (nullptr);
     juce::DeletedAtShutdown::deleteAll();
     juce::MessageManager::deleteInstance();
     return failures == 0 ? 0 : 1;

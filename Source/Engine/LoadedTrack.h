@@ -2,6 +2,7 @@
 
 #include "WaveformData.h"
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <atomic>
 #include <memory>
 
 namespace hype
@@ -38,7 +39,13 @@ public:
     {
         jassert (audio.getNumChannels() == 2);
         info.lengthSamples = audio.getNumSamples();
+        liveInstances().fetch_add (1);
     }
+
+    ~LoadedTrack() override { liveInstances().fetch_sub (1); }
+
+    /** Number of decoded tracks currently in memory (diagnostics / leak tests). */
+    static int getNumLiveInstances() noexcept { return liveInstances().load(); }
 
     /** Builds a track from any buffer (mono/stereo/multichannel). Handy for tests and generated audio. */
     static Ptr fromBuffer (const juce::AudioBuffer<float>& source, double sampleRate, juce::String title = "Untitled")
@@ -74,6 +81,8 @@ public:
     }
 
 private:
+    static std::atomic<int>& liveInstances() noexcept { static std::atomic<int> n { 0 }; return n; }
+
     juce::AudioBuffer<float> audio;
     TrackInfo info;
     std::shared_ptr<const WaveformData> waveform;

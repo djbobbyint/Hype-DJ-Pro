@@ -3,6 +3,7 @@
 #include "AudioSettingsComponent.h"
 #include "DeckComponent.h"
 #include "MixerComponent.h"
+#include "SoakRunner.h"
 #include "UiSelfTest.h"
 
 namespace hype::ui
@@ -25,7 +26,7 @@ public:
     void openAudioSettings();
     void saveSettings();
 
-    /** Developer options: --load-a <file> --load-b <file> --play --screenshot <png> [--settings]. */
+    /** Options: --load-a <file> --load-b <file> --play --soak <minutes> --selftest --screenshot <png> --settings */
     void handleCommandLine (const juce::StringArray& args);
 
 private:
@@ -57,6 +58,8 @@ private:
     int frame = 0;
 
     std::unique_ptr<UiSelfTest> selfTest;
+    std::unique_ptr<SoakRunner> soak;
+    double soakMinutes = 0.0;
     juce::File screenshotFile;
     int screenshotAtFrame = -1;
 };

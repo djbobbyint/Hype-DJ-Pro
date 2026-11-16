@@ -6,3 +6,6 @@ external/JUCE/
 .DS_Store
 build-*.log
 *-run.log
+build-win*/
+*.log
+soak*.log

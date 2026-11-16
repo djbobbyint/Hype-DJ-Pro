@@ -202,7 +202,7 @@ private:
 
     Path path = Path::Vinyl;
     bool stretcherPrimed = false;
-    int64_t feedPos = 0;
+    double feedSrcPos = 0.0;      // next source sample to feed the stretcher (source-rate domain)
 
     SincInterpolator interpolator;
     std::unique_ptr<TimeStretcher> stretcher;
@@ -210,6 +210,13 @@ private:
     juce::SmoothedValue<double, juce::ValueSmoothingTypes::Linear> speedSmoothed;
 
     juce::HeapBlock<float> increments;
+
+    // Key-lock input resampled to the device rate (when track and device rates differ), so the
+    // stretcher only handles the musical tempo/key change, never a sample-rate conversion.
+    juce::AudioBuffer<float> resampledInput;
+    juce::HeapBlock<float> resampleIncrements;
+    int resampleCapacity = 0;
+    StereoSource makeResampledInput (double& sourcePosition, int count, double srRatio) noexcept;
     juce::AudioBuffer<float> tail, tailScratch;
     int tailRemaining = 0, tailReadIndex = 0;
     FadeShape tailShape = FadeShape::EqualPower;

@@ -46,19 +46,52 @@ set_target_properties(signalsmith-stretch signalsmith-linear PROPERTIES SYSTEM T
 # Optional FFmpeg decoder
 # ---------------------------------------------------------------------------
 set(HYPE_HAS_FFMPEG 0)
+set(HYPE_FFMPEG_ROOT "" CACHE PATH "FFmpeg install prefix (include/, lib/, bin/) - used on Windows, where pkg-config isn't available")
 if(HYPE_ENABLE_FFMPEG)
-    find_package(PkgConfig QUIET)
-    if(PKG_CONFIG_FOUND)
-        pkg_check_modules(FFMPEG IMPORTED_TARGET libavformat libavcodec libavutil libswresample)
-        if(FFMPEG_FOUND)
-            set(HYPE_HAS_FFMPEG 1)
-            message(STATUS "HYPE: FFmpeg decoder enabled (${FFMPEG_libavformat_VERSION})")
+    if(HYPE_FFMPEG_ROOT)
+        add_library(hype_ffmpeg INTERFACE)
+        target_include_directories(hype_ffmpeg INTERFACE "${HYPE_FFMPEG_ROOT}/include")
+        foreach(lib avformat avcodec swresample avutil)
+            find_library(HYPE_FFMPEG_${lib} NAMES ${lib} lib${lib} lib${lib}.dll.a
+                         PATHS "${HYPE_FFMPEG_ROOT}/lib" "${HYPE_FFMPEG_ROOT}/bin"
+                         NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+            if(NOT HYPE_FFMPEG_${lib})
+                message(FATAL_ERROR "HYPE: ${lib} not found in ${HYPE_FFMPEG_ROOT}")
+            endif()
+            target_link_libraries(hype_ffmpeg INTERFACE "${HYPE_FFMPEG_${lib}}")
+        endforeach()
+        file(GLOB HYPE_FFMPEG_RUNTIME "${HYPE_FFMPEG_ROOT}/bin/*.dll")
+        set(HYPE_HAS_FFMPEG 1)
+        message(STATUS "HYPE: FFmpeg decoder enabled (${HYPE_FFMPEG_ROOT})")
+    else()
+        find_package(PkgConfig QUIET)
+        if(PKG_CONFIG_FOUND)
+            pkg_check_modules(FFMPEG IMPORTED_TARGET libavformat libavcodec libavutil libswresample)
+            if(FFMPEG_FOUND)
+                add_library(hype_ffmpeg INTERFACE)
+                target_link_libraries(hype_ffmpeg INTERFACE PkgConfig::FFMPEG)
+                set(HYPE_HAS_FFMPEG 1)
+                message(STATUS "HYPE: FFmpeg decoder enabled (${FFMPEG_libavformat_VERSION})")
+            endif()
         endif()
     endif()
     if(NOT HYPE_HAS_FFMPEG)
-        message(STATUS "HYPE: FFmpeg not found - AAC/M4A will only work through the platform decoder (CoreAudio / Media Foundation)")
+        message(STATUS "HYPE: FFmpeg not found - AAC/M4A will only work through the platform decoder (CoreAudio on macOS)")
     endif()
 endif()
+
+# Self-contained Windows binaries with MinGW: no libstdc++/libgcc/winpthread DLLs needed.
+if(MINGW)
+    add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
+
+# Copies the FFmpeg DLLs next to a Windows executable.
+function(hype_copy_runtime_dlls target)
+    if(WIN32 AND HYPE_FFMPEG_RUNTIME)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${HYPE_FFMPEG_RUNTIME} $<TARGET_FILE_DIR:${target}>)
+    endif()
+endfunction()
 
 # ---------------------------------------------------------------------------
 # All JUCE modules, compiled once into one static library shared by the engine,
@@ -115,6 +148,26 @@ if(UNIX AND NOT APPLE)
     endif()
 endif()
 
+# MinGW-w64 < 12 lacks some Direct2D headers JUCE 8 needs, and Linux file systems are
+# case-sensitive (JUCE includes <Dbghelp.h>). scripts/build-windows.sh prepares this directory.
+set(HYPE_MINGW_COMPAT_INCLUDE "" CACHE PATH "Extra include directory searched first when building JUCE with MinGW")
+if(MINGW AND HYPE_MINGW_COMPAT_INCLUDE)
+    target_include_directories(hype_juce BEFORE PRIVATE "${HYPE_MINGW_COMPAT_INCLUDE}")
+endif()
+if(MINGW)
+    # JUCE 8 targets Windows 10 (its Direct2D renderer uses Windows 10 interfaces); MinGW defaults to Windows 7.
+    target_compile_definitions(hype_juce PUBLIC _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A00000C)
+    # MSVC's <string> pulls in <cstring>; libstdc++'s doesn't, but JUCE relies on it.
+    target_compile_options(hype_juce PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-include cstring>)
+    # JUCE requests these with #pragma comment(lib), which only MSVC honours.
+    target_link_libraries(hype_juce PUBLIC
+        d2d1 d3d11 dcomp dxgi dbghelp dwrite dxguid advapi32 comctl32 comdlg32 dwmapi imm32 kernel32
+        shlwapi user32 gdi32 version vfw32 wininet winmm ws2_32 ole32 oleaut32 uuid shell32 rpcrt4 setupapi avrt ksuser)
+    target_sources(hype_juce PRIVATE cmake/mingw/HypeMingwCompat.cpp)
+    # Windows Media Format SDK error code missing from mingw-w64's nserror.h (value from the Windows SDK).
+    target_compile_definitions(hype_juce PRIVATE "NS_E_NO_MORE_SAMPLES=((HRESULT)0xC00D0BCFL)")
+endif()
+
 # Re-export the JUCE include paths and definitions to consumers.
 target_include_directories(hype_juce INTERFACE $<TARGET_PROPERTY:hype_juce,INCLUDE_DIRECTORIES>)
 target_compile_definitions(hype_juce INTERFACE $<TARGET_PROPERTY:hype_juce,COMPILE_DEFINITIONS>)
@@ -161,7 +214,7 @@ target_compile_definitions(hype_engine PUBLIC HYPE_HAS_FFMPEG=${HYPE_HAS_FFMPEG}
 target_link_libraries(hype_engine PUBLIC hype_juce PRIVATE signalsmith-stretch)
 
 if(HYPE_HAS_FFMPEG)
-    target_link_libraries(hype_engine PRIVATE PkgConfig::FFMPEG)
+    target_link_libraries(hype_engine PRIVATE hype_ffmpeg)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -191,12 +244,15 @@ if(HYPE_BUILD_APP)
         Source/App/MixerComponent.h
         Source/App/WaveformViews.cpp
         Source/App/WaveformViews.h
+        Source/App/SoakRunner.cpp
+        Source/App/SoakRunner.h
         Source/App/UiSelfTest.cpp
         Source/App/UiSelfTest.h
         Source/App/Widgets.cpp
         Source/App/Widgets.h)
 
     target_link_libraries(HypeDJPro PRIVATE hype_engine)
+    hype_copy_runtime_dlls(HypeDJPro)
 
     # The UI may only talk to the engine through Source/Api/HypeEngineApi.h.
     add_custom_target(hype_check_api_boundary
@@ -212,6 +268,7 @@ endif()
 if(HYPE_BUILD_CLI)
     add_executable(hype_cli Source/Cli/Main.cpp)
     target_link_libraries(hype_cli PRIVATE hype_engine)
+    hype_copy_runtime_dlls(hype_cli)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -221,5 +278,13 @@ if(HYPE_BUILD_TESTS)
     enable_testing()
     add_executable(hype_engine_tests Tests/EngineTests.cpp Tests/AllocationTracker.cpp)
     target_link_libraries(hype_engine_tests PRIVATE hype_engine)
+    hype_copy_runtime_dlls(hype_engine_tests)
     add_test(NAME hype_engine_tests COMMAND hype_engine_tests)
+
+    # Phase 1 acceptance suite (end-to-end through the public API and a simulated interface)
+    add_executable(hype_phase1_tests Tests/Phase1AcceptanceTests.cpp Tests/AllocationTracker.cpp)
+    target_link_libraries(hype_phase1_tests PRIVATE hype_engine)
+    hype_copy_runtime_dlls(hype_phase1_tests)
+    add_test(NAME hype_phase1_tests COMMAND hype_phase1_tests)
+    set_tests_properties(hype_phase1_tests PROPERTIES ENVIRONMENT "HYPE_SOAK_MINUTES=30" TIMEOUT 3600)
 endif()

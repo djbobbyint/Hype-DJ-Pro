@@ -31,7 +31,7 @@ namespace
     {
         if (std::abs (x) < 1e-9)
             return 1.0;
-        const double px = M_PI * x;
+        const double px = 3.14159265358979323846 * x;   // (M_PI is not standard C++)
         return std::sin (px) / px;
     }
 }

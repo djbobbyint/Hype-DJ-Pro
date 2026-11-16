@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AllocationTracker.h"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <map>
 
@@ -71,8 +72,9 @@ public:
         int getOutputLatencyInSamples() override    { return 32; }
         int getInputLatencyInSamples() override     { return 0; }
 
-        /** Runs `numBlocks` callbacks, capturing *physical* channels into `capture` (if given). */
-        void pump (int numBlocks, juce::AudioBuffer<float>* capture = nullptr)
+        /** Runs `numBlocks` callbacks, capturing *physical* channels into `capture` (if given).
+            With `trackAllocations`, heap allocations made inside the callback are counted. */
+        void pump (int numBlocks, juce::AudioBuffer<float>* capture = nullptr, bool trackAllocations = false)
         {
             const int numActive = activeOutputs.countNumberOfSetBits();
             juce::AudioBuffer<float> packed (juce::jmax (1, numActive), bufferSize);
@@ -82,8 +84,16 @@ public:
             for (int b = 0; b < numBlocks && callback != nullptr; ++b)
             {
                 packed.clear();
-                callback->audioDeviceIOCallbackWithContext (nullptr, 0, packed.getArrayOfWritePointers(),
-                                                            numActive, bufferSize, {});
+                auto* const* outs = packed.getArrayOfWritePointers();
+                if (trackAllocations)
+                {
+                    alloctrack::Scope scope;
+                    callback->audioDeviceIOCallbackWithContext (nullptr, 0, outs, numActive, bufferSize, {});
+                }
+                else
+                {
+                    callback->audioDeviceIOCallbackWithContext (nullptr, 0, outs, numActive, bufferSize, {});
+                }
                 if (capture != nullptr)
                 {
                     int p = 0;

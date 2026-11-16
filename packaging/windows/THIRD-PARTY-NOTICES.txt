@@ -1,0 +1,18 @@
+HYPE DJ PRO uses the following third-party software.
+
+JUCE 8 (https://juce.com)
+  Licensed under the GNU AGPLv3 or a commercial JUCE licence. Distributing a closed-source
+  product built with JUCE requires a commercial JUCE licence. See JUCE-LICENSE.md.
+
+FFmpeg 6.1.1 (https://ffmpeg.org) - avcodec-60.dll, avformat-60.dll, avutil-58.dll, swresample-4.dll
+  Licensed under the GNU LGPL v2.1 or later (FFmpeg-LGPL-2.1.txt). Built from unmodified
+  source (tag n6.1.1) as shared libraries, LGPL configuration only (no GPL or non-free parts),
+  with audio decoders/demuxers only. The exact configure command is in scripts/build-windows.sh
+  of the HYPE DJ PRO source. You may replace these DLLs with your own compatible build.
+  Source: https://github.com/FFmpeg/FFmpeg/tree/n6.1.1
+
+Signalsmith Stretch 1.4.0 (https://signalsmith-audio.co.uk/code/stretch/) - MIT licence.
+Signalsmith Linear 0.6.4 - MIT licence.
+
+mingw-w64 runtime (statically linked) - see https://www.mingw-w64.org (permissive licences / ZPL).
+GCC runtime libraries (libstdc++, libgcc, statically linked) - GPLv3 with the GCC Runtime Library Exception.

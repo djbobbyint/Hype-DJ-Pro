@@ -68,6 +68,7 @@ MainComponent::~MainComponent()
     stopTimer();
     saveSettings();
     selfTest.reset();
+    soak.reset();
     deviceController.setStatusListener (nullptr);
     if (settingsWindow != nullptr)
         delete settingsWindow.getComponent();
@@ -82,7 +83,7 @@ void MainComponent::restoreSettings()
 
 void MainComponent::saveSettings()
 {
-    if (selfTest != nullptr || screenshotAtFrame >= 0 || screenshotFile != juce::File())
+    if (selfTest != nullptr || soak != nullptr || screenshotAtFrame >= 0 || screenshotFile != juce::File())
         return;   // automated runs never overwrite the user's settings
 
     if (auto xml = deviceController.createStateXml())
@@ -181,6 +182,7 @@ void MainComponent::handleCommandLine (const juce::StringArray& args)
     const auto cwd = juce::File::getCurrentWorkingDirectory();
 
     playAfterLoads = args.contains ("--play");
+    soakMinutes = value ("--soak").getDoubleValue();
     startSelfTestAfterLoads = args.contains ("--selftest");
 
     for (int d = 0; d < 2; ++d)
@@ -225,6 +227,14 @@ void MainComponent::onCommandLineLoadsFinished()
         engine.syncDeck (1, 0, true);
         engine.setSyncLock (1, 0);
         engine.deck (1).play();
+    }
+
+    if (soakMinutes > 0.0)
+    {
+        const auto reportFile = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                                    .getChildFile ("HYPE DJ PRO soak " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M") + ".txt");
+        soak = std::make_unique<SoakRunner> (engine, soakMinutes, reportFile);
+        soak->start();
     }
 
     if (startSelfTestAfterLoads)
