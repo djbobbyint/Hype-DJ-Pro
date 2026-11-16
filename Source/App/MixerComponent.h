@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/AudioEngine.h"
+#include "Api/HypeEngineApi.h"
 #include "Widgets.h"
 
 namespace hype::ui
@@ -9,7 +9,7 @@ namespace hype::ui
 class ChannelStrip : public juce::Component
 {
 public:
-    ChannelStrip (Mixer&, Deck&, int deckIndex);
+    ChannelStrip (MixerControl&, CueControl&, int deckIndex);
 
     void updateMeter (float peak);
     void syncFromEngine();
@@ -17,8 +17,8 @@ public:
     void resized() override;
 
 private:
-    Mixer& mixer;
-    Deck& deck;
+    MixerControl& mixer;
+    CueControl& cue;
     const int index;
     const juce::Colour accent;
 
@@ -33,17 +33,18 @@ private:
 class MixerComponent : public juce::Component
 {
 public:
-    explicit MixerComponent (AudioEngine&);
+    explicit MixerComponent (EngineInterface&);
 
-    void update (const Mixer::Meters&);
+    void update (const MixerMeters&, const CueMeters&);
     /** Re-reads every control from the engine (changes made by MIDI, presets, other code...). */
     void syncFromEngine();
     void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
-    AudioEngine& engine;
-    Mixer& mixer;
+    EngineInterface& engine;
+    MixerControl& mixer;
+    CueControl& cue;
 
     ChannelStrip stripA, stripB;
 

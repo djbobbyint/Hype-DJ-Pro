@@ -8,10 +8,10 @@ namespace
     constexpr double bendAmount = 0.04;
 }
 
-DeckComponent::DeckComponent (AudioEngine& e, int d)
+DeckComponent::DeckComponent (EngineInterface& e, int d)
     : engine (e), deck (d), accent (Palette::forDeck (d)), overview (e, d), jog (e, d)
 {
-    auto& dk = engine.getDeck (deck);
+    auto& dk = engine.deck (deck);
 
     addAndMakeVisible (overview);
     addAndMakeVisible (jog);
@@ -29,12 +29,12 @@ DeckComponent::DeckComponent (AudioEngine& e, int d)
     ejectButton.onClick = [this]
     {
         if (state.playing) { showMessage ("Pause the deck before ejecting"); return; }
-        engine.getDeck (deck).eject();
+        engine.deck (deck).eject();
     };
 
     keyLockButton.setClickingTogglesState (true);
     keyLockButton.setTooltip ("Key lock: keep the original key when changing tempo");
-    keyLockButton.onClick = [this] { engine.getDeck (deck).setKeyLock (keyLockButton.getToggleState()); };
+    keyLockButton.onClick = [this] { engine.deck (deck).setKeyLock (keyLockButton.getToggleState()); };
 
     rangeButton.setTooltip ("Pitch fader range");
     rangeButton.onClick = [this] { cyclePitchRange(); };
@@ -46,14 +46,14 @@ DeckComponent::DeckComponent (AudioEngine& e, int d)
     // Transport
     playButton.setColour (juce::TextButton::buttonOnColourId, Palette::play);
     playButton.setTooltip ("Play / pause");
-    playButton.onClick = [this] { engine.getDeck (deck).togglePlayPause(); };
+    playButton.onClick = [this] { engine.deck (deck).togglePlayPause(); };
     addAndMakeVisible (playButton);
 
     cueButton.setColour (juce::TextButton::buttonOnColourId, Palette::cue);
     cueButton.setTooltip ("CUE: while playing returns to the cue point; when paused sets the cue point, "
                           "or previews from it while held");
-    cueButton.onPress   = [this] { engine.getDeck (deck).cueDown(); };
-    cueButton.onRelease = [this] { engine.getDeck (deck).cueUp(); };
+    cueButton.onPress   = [this] { engine.deck (deck).cueDown(); };
+    cueButton.onRelease = [this] { engine.deck (deck).cueUp(); };
     addAndMakeVisible (cueButton);
 
     // Pitch
@@ -64,7 +64,7 @@ DeckComponent::DeckComponent (AudioEngine& e, int d)
     pitchFader.setColour (juce::Slider::trackColourId, accent);
     pitchFader.setTooltip ("Pitch / tempo fader (down = faster). Double-click to reset.");
     // CDJ convention: pulling the fader towards you (down) speeds up.
-    pitchFader.onValueChange = [this] { engine.getDeck (deck).setPitchFader (-pitchFader.getValue()); };
+    pitchFader.onValueChange = [this] { engine.deck (deck).setPitchFader (-pitchFader.getValue()); };
     addAndMakeVisible (pitchFader);
 
     for (auto* b : { &bendDown, &bendUp })
@@ -74,9 +74,9 @@ DeckComponent::DeckComponent (AudioEngine& e, int d)
     }
     bendDown.setTooltip ("Pitch bend: slow down while held");
     bendUp.setTooltip ("Pitch bend: speed up while held");
-    bendDown.onPress = [this] { engine.getDeck (deck).setPitchBend (-bendAmount); };
-    bendUp.onPress   = [this] { engine.getDeck (deck).setPitchBend (bendAmount); };
-    bendDown.onRelease = bendUp.onRelease = [this] { engine.getDeck (deck).setPitchBend (0.0); };
+    bendDown.onPress = [this] { engine.deck (deck).setPitchBend (-bendAmount); };
+    bendUp.onPress   = [this] { engine.deck (deck).setPitchBend (bendAmount); };
+    bendDown.onRelease = bendUp.onRelease = [this] { engine.deck (deck).setPitchBend (0.0); };
 
     dk.setPitchRange (pitchRanges[0]);
 
@@ -98,7 +98,7 @@ DeckComponent::DeckComponent (AudioEngine& e, int d)
 
 void DeckComponent::cyclePitchRange()
 {
-    auto& dk = engine.getDeck (deck);
+    auto& dk = engine.deck (deck);
     int idx = 0;
     for (int i = 0; i < 4; ++i)
         if (std::abs (dk.getPitchRange() - pitchRanges[i]) < 1e-6)
@@ -117,7 +117,7 @@ void DeckComponent::toggleSync()
         engine.setSyncLock (deck, -1);
         return;
     }
-    const auto otherState = engine.getDeck (other).getState();
+    const auto otherState = engine.deck (other).getState();
     if (state.originalBpm <= 0.0 || otherState.originalBpm <= 0.0)
     {
         showMessage ("Sync needs a BPM on both decks");
@@ -157,9 +157,9 @@ void DeckComponent::requestLoad (const juce::File& file)
     loading = true;
     showMessage ("Loading " + file.getFileName() + "...", Palette::textDim);
     juce::Component::SafePointer<DeckComponent> safe (this);
-    engine.loadTrackAsync (deck, file, [safe] (int, const AudioFileDecoder::Result& r)
+    engine.loadTrack (deck, file, [safe] (int, const LoadResult& r)
     {
-        const bool ok = r.wasOk();
+        const bool ok = r.ok;
         const auto error = r.error;
         juce::MessageManager::callAsync ([safe, ok, error]
         {
@@ -192,10 +192,10 @@ void DeckComponent::filesDropped (const juce::StringArray& files, int, int)
         requestLoad (juce::File (files[0]));
 }
 
-void DeckComponent::update (const Deck::State& s, const LoadedTrack::Ptr& track)
+void DeckComponent::update (const DeckState& s, std::shared_ptr<const WaveformData> waveform)
 {
     state = s;
-    overview.update (s, track);
+    overview.update (s, waveform);
     jog.update (s);
 
     playButton.setToggleState (s.playing && ! s.cuePreviewing, juce::dontSendNotification);
@@ -205,7 +205,7 @@ void DeckComponent::update (const Deck::State& s, const LoadedTrack::Ptr& track)
     keyLockButton.setToggleState (s.keyLock, juce::dontSendNotification);
     syncButton.setToggleState (engine.getSyncLockMaster (deck) == 1 - deck, juce::dontSendNotification);
 
-    auto& dk = engine.getDeck (deck);
+    auto& dk = engine.deck (deck);
     rangeButton.setButtonText ("+/-" + juce::String (juce::roundToInt (dk.getPitchRange() * 100.0)) + "%");
     if (! pitchFader.isMouseButtonDown())
         pitchFader.setValue (-dk.getPitchFader(), juce::dontSendNotification);   // follows sync

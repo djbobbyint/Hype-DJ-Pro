@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Api/HypeEngineApi.h"
 #include "EngineConfig.h"
 #include "LoadedTrack.h"
 #include "SincInterpolator.h"
@@ -13,7 +14,8 @@
 namespace hype
 {
 /**
-    One DJ deck: a player for a single in-memory track.
+    DeckEngine: one DJ deck - a player for a single in-memory track. Implements the public
+    DeckControl interface; the audio-thread side is private and driven only by AudioEngine.
 
     Threading model
     ---------------
@@ -34,11 +36,11 @@ namespace hype
     Every discontinuity (play, pause, stop, cue, seek, load, path switch) is de-clicked by
     crossfading the old output (rendered a few ms ahead into a tail buffer) with the new one.
 */
-class Deck
+class DeckEngine : public DeckControl
 {
 public:
-    explicit Deck (int deckIndex);
-    ~Deck();
+    explicit DeckEngine (int deckIndex);
+    ~DeckEngine() override;
 
     int getIndex() const noexcept { return index; }
 
@@ -49,105 +51,75 @@ public:
 
     /** Swaps in a decoded track. The deck stops, playhead and cue go to 0 (or the first beat). */
     bool loadTrack (LoadedTrack::Ptr track);
-    bool eject();
+    bool eject() override;
 
-    bool play  (int64_t atEngineSample = -1);
-    bool pause (int64_t atEngineSample = -1);
-    bool togglePlayPause();
+    bool play  (int64_t atEngineSample = -1) override;
+    bool pause (int64_t atEngineSample = -1) override;
+    bool togglePlayPause() override;
 
     /** Stops playback and returns the playhead to the cue point. */
-    bool stop();
+    bool stop() override;
 
     /** CDJ-style CUE button.
         - playing:                    jump back to the cue point and pause
         - paused on the cue point:    preview from the cue point while held
         - paused elsewhere:           set the cue point here
         Pressing PLAY during a preview keeps playing after CUE is released. */
-    bool cueDown();
-    bool cueUp();
+    bool cueDown() override;
+    bool cueUp() override;
 
     /** Sets the cue point at the exact current playhead. */
-    bool setCuePoint();
-    bool setCuePointSeconds (double seconds);
+    bool setCuePoint() override;
+    bool setCuePointSeconds (double seconds) override;
 
     /** Jumps to the cue point, keeping the current play/pause state. */
-    bool returnToCue();
+    bool returnToCue() override;
 
-    bool seekToSeconds (double seconds, int64_t atEngineSample = -1);
-    bool seekToNormalised (double proportion0to1);
-    bool seekRelativeSeconds (double deltaSeconds);
+    bool seekToSeconds (double seconds, int64_t atEngineSample = -1) override;
+    bool seekToNormalised (double proportion0to1) override;
+    bool seekRelativeSeconds (double deltaSeconds) override;
 
     //==========================================================================
     // Tempo & pitch (any thread, lock-free)
 
     /** Pitch fader range as a fraction, e.g. 0.08 = +/-8 %, 0.16, 0.50, 1.0 (= +/-100 %). */
-    void setPitchRange (double fraction);
+    void setPitchRange (double fraction) override;
     /** Pitch fader position in [-1, 1]; tempo = 1 + position * range. */
-    void setPitchFader (double position);
+    void setPitchFader (double position) override;
     /** Sets tempo directly as a ratio (1.0 = original). Updates the fader position to match. */
-    void setTempoRatio (double ratio);
+    void setTempoRatio (double ratio) override;
     /** Momentary pitch bend, added to the tempo ratio (e.g. +/-0.04 while a bend button / jog is held). */
-    void setPitchBend (double ratioOffset);
+    void setPitchBend (double ratioOffset) override;
 
     /** Key lock: keep the original key regardless of tempo. */
-    void setKeyLock (bool enabled);
+    void setKeyLock (bool enabled) override;
     /** Key shift in semitones, independent of tempo (forces the key-lock path while non-zero). */
-    void setKeyShiftSemitones (double semitones);
-
-    /** Channel trim gain in dB (pre-fader). */
-    void setTrimDb (float decibels);
+    void setKeyShiftSemitones (double semitones) override;
 
     /** Overrides the beat grid (e.g. from the user tapping, or an external analyser). */
-    bool setBeatGrid (double bpm, double firstBeatSeconds);
+    bool setBeatGrid (double bpm, double firstBeatSeconds) override;
 
-    double getPitchRange() const noexcept  { return pitchRange.load(); }
-    double getPitchFader() const noexcept  { return pitchFader.load(); }
-    double getTempoRatio() const noexcept  { return baseSpeed.load(); }
-    bool   isKeyLockOn() const noexcept    { return keyLock.load(); }
-    float  getTrimDb() const noexcept      { return trimDb.load(); }
+    double getPitchRange() const override  { return pitchRange.load(); }
+    double getPitchFader() const override  { return pitchFader.load(); }
+    double getTempoRatio() const override  { return baseSpeed.load(); }
+    bool   isKeyLockOn() const override    { return keyLock.load(); }
 
-    //==========================================================================
-    struct State
-    {
-        bool   loaded = false;
-        bool   playing = false;
-        bool   cuePreviewing = false;
-        bool   reachedEnd = false;
-        bool   keyLock = false;
-        bool   keyLockPathActive = false;   // true when the stretcher is in use
 
-        juce::String title, artist;
-        double sampleRate = 0.0;
+    DeckState getState() const override;
+    std::shared_ptr<const WaveformData> getWaveform() const override;
 
-        double durationSeconds  = 0.0;
-        double elapsedSeconds   = 0.0;
-        double remainingSeconds = 0.0;
-        double position         = 0.0;      // 0..1 through the track
-        double cueSeconds       = 0.0;
-
-        double tempoRatio       = 1.0;      // pitch fader (or sync) tempo, without bend
-        double effectiveSpeed   = 1.0;      // what is actually playing, including bend
-        double pitchPercent     = 0.0;      // (effectiveSpeed - 1) * 100
-        double keyShiftSemitones = 0.0;
-
-        double originalBpm      = 0.0;      // 0 = unknown
-        double currentBpm       = 0.0;      // originalBpm * effectiveSpeed
-        double beatPhase        = 0.0;      // 0..1 position within the current beat
-        double firstBeatSeconds = 0.0;      // beat grid anchor (assumed downbeat)
-
-        float  peakLeft = 0.0f, peakRight = 0.0f;  // since last getState() call
-        int    trackGeneration = 0;
-    };
-
-    State getState() const;
-
-    /** The track currently loaded on the audio thread, for display (waveform, metadata).
-        Returns nullptr while empty, or while a newer load hasn't reached the audio thread yet.
-        Any non-audio thread. */
+    /** The track currently loaded on the audio thread (engine/tests; the UI uses getWaveform()).
+        Returns nullptr while empty, or while a newer load hasn't reached the audio thread yet. */
     LoadedTrack::Ptr getDisplayTrack() const;
 
+    /** Releases tracks retired by the audio thread (housekeeping thread). */
+    void collectGarbage();
+
+private:
+    friend class AudioEngine;
+
     //==========================================================================
-    // Audio thread only (called by AudioEngine)
+    // Audio thread only (AudioEngine)
 
     void prepare (double deviceSampleRate);
     void pullCommands (int64_t now);
@@ -169,10 +141,6 @@ public:
     void   playAudio() noexcept;
     double getPositionAudio() const noexcept       { return pos; }
 
-    /** Non-audio thread: releases tracks retired by the audio thread. */
-    void collectGarbage();
-
-private:
     enum class CommandType : uint8_t
     {
         Load, Play, Pause, TogglePlay, Stop, CueDown, CueUp, SetCue, SetCueAt,
@@ -215,7 +183,6 @@ private:
     std::atomic<double> pitchRange { 0.08 }, pitchFader { 0.0 }, baseSpeed { 1.0 },
                         pitchBend { 0.0 }, keyShift { 0.0 };
     std::atomic<bool>   keyLock { false };
-    std::atomic<float>  trimDb { 0.0f };
 
     mutable juce::SpinLock infoLock;
     LoadedTrack::Ptr pendingTrack;  // most recently requested load (for display on non-audio threads)
@@ -241,7 +208,6 @@ private:
     std::unique_ptr<TimeStretcher> stretcher;
 
     juce::SmoothedValue<double, juce::ValueSmoothingTypes::Linear> speedSmoothed;
-    juce::SmoothedValue<float,  juce::ValueSmoothingTypes::Linear> trimSmoothed;
 
     juce::HeapBlock<float> increments;
     juce::AudioBuffer<float> tail, tailScratch;
@@ -264,6 +230,6 @@ private:
     std::atomic<int>   pubGeneration { 0 };
     mutable std::atomic<float> pubPeakL { 0.0f }, pubPeakR { 0.0f };
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Deck)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DeckEngine)
 };
 } // namespace hype

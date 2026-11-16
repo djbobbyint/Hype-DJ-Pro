@@ -39,27 +39,33 @@ and a load time equal to the decode time; tracks are capped at 60 minutes (`conf
 ## Architecture
 
 ```
-            UI / MIDI / CLI threads                       audio thread (device callback)
- ┌──────────────────────────────────────┐        ┌───────────────────────────────────────────┐
- │ Deck::play/cue/seek… ─► wait-free FIFO ├──────►│ apply commands (sample-accurate schedule) │
- │ Deck::setPitchFader… ─► atomics        ├──────►│ Deck A ─┐                                 │
- │ AudioEngine::syncDeck ─► FIFO          ├──────►│ Deck B ─┴► Mixer ─► master / cue / direct │
- │ getState() ◄── published atomics       │◄──────┤                                           │
- └──────────────────────────────────────┘        └───────────────────────────────────────────┘
-   loader pool: decode + BPM analysis ──► LoadedTrack ──► deck (swap on audio thread)
-   housekeeping thread ◄── retired tracks (memory never freed on the audio thread)
+   UI thread(s)                                   audio thread (device callback or silent clock)
+ ┌────────────────────────────────────────┐      ┌────────────────────────────────────────────────┐
+ │ EngineInterface (Api/HypeEngineApi.h)  │      │ AudioEngine render loop                        │
+ │  DeckControl  ─► FIFO / atomics ───────┼─────►│  DeckEngine A ─┐                               │
+ │  MixerControl ─► atomics ──────────────┼─────►│  DeckEngine B ─┴► MixerEngine ─► CueEngine     │
+ │  CueControl   ─► atomics ──────────────┼─────►│                       │              │         │
+ │  DeviceControl (message thread)        │      │                       └► OutputRouter ◄┘        │
+ │  getState()/meters ◄── atomics ────────┼◄─────┤                              ► device channels  │
+ └────────────────────────────────────────┘      └────────────────────────────────────────────────┘
+   TrackLoader (loader threads): decode + BPM + waveform ─► DeckEngine (pointer swap on the audio thread)
+   AudioDeviceManager (message thread): hardware, output assignment ─► OutputRouter, recovery watchdog
+   housekeeping thread ◄── retired tracks (memory is never freed on the audio thread)
 ```
 
-| File | Role |
+| Component | Role |
 |---|---|
-| `Engine/AudioEngine` | Device I/O, chunked render loop, sample clock, async loading, sync |
-| `Engine/Deck` | One player: transport, cue, tempo/pitch, key-lock path, de-click, state |
-| `Engine/Mixer` | Faders, trim, crossfader curves, PFL cue, master limiter, output routing |
-| `Engine/SincInterpolator` | 16-tap windowed-sinc variable-rate reader (vinyl mode) with anti-alias kernels |
-| `Engine/TimeStretcher` | **Key-lock interface** + Signalsmith implementation |
-| `Engine/BeatAnalyzer` | Offline BPM + first-beat detection (kick-weighted, beat-grid fit) |
-| `Engine/AudioFileDecoder`, `FFmpegDecoder` | Decoder chain |
-| `Engine/SpscQueue` | Wait-free single-producer/single-consumer ring buffer |
+| `Api/HypeEngineApi.h` | **The UI's only view of the engine**: `EngineInterface`, `DeckControl`, `MixerControl`, `CueControl`, `DeviceControl` and value types, with a threading contract. The build enforces the boundary. |
+| `Engine/AudioEngine` | Processing callback, render loop, scheduling, sync, silent clock; composes the components |
+| `Engine/DeckEngine` | One deck: transport, cue, tempo/pitch, key lock, de-click |
+| `Engine/MixerEngine` | Channel gain, 3-band EQ, channel volume, crossfader, master, limiter, meters |
+| `Engine/CueEngine` | Headphone monitoring (cue bus, mix, level, split) |
+| `Engine/OutputRouter` | Master / headphone / direct outputs → physical channels |
+| `Engine/AudioDeviceManager` | Hardware selection, output configuration, disconnection recovery, persistence |
+| `Engine/TrackLoader` | Background decoding (JUCE/FFmpeg), BPM/beat grid and waveform analysis |
+| `Engine/SincInterpolator`, `TimeStretcher`, `ThreeBandEq`, `SpscQueue` | DSP and real-time building blocks |
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the signal flow, threading contract and ownership.
 
 ### Real-time guarantees
 - The audio callback never allocates, locks or frees. A test enforces this by intercepting `malloc` on
@@ -74,7 +80,7 @@ and a load time equal to the decode time; tracks are capped at 60 minutes (`conf
 
 | Feature | API |
 |---|---|
-| Load / eject | `AudioEngine::loadTrackAsync(deck, file, cb)`, `Deck::loadTrack`, `eject` |
+| Load / eject | `EngineInterface::loadTrack(deck, file, cb)`, `DeckControl::eject` |
 | Play / pause / toggle | `play(atSample=-1)`, `pause()`, `togglePlayPause()` |
 | Stop | `stop()` pauses and returns to the cue point |
 | CDJ cue | `cueDown()` / `cueUp()`: while playing → back to cue and pause; paused on cue → preview while held; paused elsewhere → set cue |
@@ -83,7 +89,7 @@ and a load time equal to the decode time; tracks are capped at 60 minutes (`conf
 | Pitch fader | `setPitchRange(0.08/0.16/0.5/1.0)`, `setPitchFader(-1..1)`, `setTempoRatio(r)` |
 | Pitch bend | `setPitchBend(±ratio)`, added on top of the fader (momentary nudge) |
 | Key lock | `setKeyLock(bool)`, `setKeyShiftSemitones(s)` |
-| Trim gain | `setTrimDb(dB)` |
+| Channel gain | `MixerControl::setChannelGainDb(deck, dB)` |
 | BPM / beat grid | auto-detected on load; `setBeatGrid(bpm, firstBeat)` to override |
 | Display data | `getState()`: duration, elapsed, remaining, position 0..1, original and current BPM, pitch %, beat phase, cue, peaks |
 
@@ -118,7 +124,7 @@ deck (post channel GAIN) → 3-band EQ ─┬→ channel fader → crossfader A/
   with a single stereo output.
 - Separate **headphone output pair**, assignable to any physical channels of the interface.
 
-## Audio device management (`AudioDeviceController` + Audio Settings panel)
+## Audio device management (`AudioDeviceManager` + Audio Settings panel)
 - Driver type, output device, sample rate, buffer size (shown with its latency in ms), active output channels.
 - **Master output** and **headphone output** assignment as stereo pairs of physical channels (or off). The needed
   channels are enabled on the device automatically, and the engine maps physical channels to JUCE's packed
@@ -149,7 +155,8 @@ Dark, high-contrast layout: status bar → two full-width scrolling waveforms �
 ## Performance & real-time design
 - No locks, allocation, file I/O or blocking in the audio callback. A test intercepts `malloc` on the audio thread
   while every feature runs, including the EQ and the routing.
-- UI → engine: atomics for continuous parameters, wait-free FIFOs for actions. Engine → UI: atomics only.
+- UI → engine only through `HypeEngineApi.h`: atomics for continuous parameters, wait-free FIFOs for actions.
+  Engine → UI: atomics and immutable snapshots only.
 - Tracks are decoded and analysed (BPM, beat grid, waveform) on low-priority loader threads, then swapped in with a
   single pointer exchange. Retired tracks are freed on a housekeeping thread, never on the audio thread.
 - Fades and smoothing everywhere (4 ms de-click crossfades; 20–30 ms parameter ramps), limiter on the master.

@@ -1,44 +1,12 @@
--- Checking for module 'gl'
---   Package 'gl', required by 'virtual:world', not found
--- Checking for module 'libcurl'
---   Package 'libcurl', required by 'virtual:world', not found
--- Checking for modules 'webkit2gtk-4.0;gtk+-x11-3.0'
---   Package 'webkit2gtk-4.0', required by 'virtual:world', not found
---   Package 'gtk+-x11-3.0', required by 'virtual:world', not found
--- Configuring juceaide
--- Building juceaide
--- Exporting juceaide
--- Testing juceaide
--- Finished setting up juceaide
--- HYPE: FFmpeg decoder enabled (60.16.100)
--- Configuring done (1.2s)
--- Generating done (0.0s)
--- Build files have been written to: /home/user/hype-dj-pro/build-asan
 [0/2] Re-checking globbed directories...
-[1/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_core/juce_core_CompilationTime.cpp.o
-[2/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_events/juce_events.cpp.o
-[3/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_data_structures/juce_data_structures.cpp.o
-[4/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_core/juce_core.cpp.o
-[5/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_graphics/juce_graphics.cpp.o
-[6/27] Building C object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_graphics/juce_graphics_Sheenbidi.c.o
-[7/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_graphics/juce_graphics_Harfbuzz.cpp.o
-[8/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp.o
-[9/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp.o
-[10/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_audio_devices/juce_audio_devices.cpp.o
-[11/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioDeviceController.cpp.o
-[12/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioEngine.cpp.o
-[13/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioFileDecoder.cpp.o
-[14/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/BeatAnalyzer.cpp.o
-[15/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/Deck.cpp.o
-[16/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/FFmpegDecoder.cpp.o
-[17/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/Mixer.cpp.o
-[18/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/SincInterpolator.cpp.o
-[19/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/ThreeBandEq.cpp.o
-[20/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/TimeStretcher.cpp.o
-[21/27] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/WaveformData.cpp.o
-[22/27] Building CXX object CMakeFiles/hype_engine_tests.dir/Tests/EngineTests.cpp.o
-[23/27] Building CXX object CMakeFiles/hype_engine_tests.dir/Tests/AllocationTracker.cpp.o
-[24/27] Building CXX object CMakeFiles/hype_juce.dir/external/JUCE/modules/juce_gui_basics/juce_gui_basics.cpp.o
-[25/27] Linking CXX static library libhype_juce.a
-[26/27] Linking CXX static library libhype_engine.a
-[27/27] Linking CXX executable hype_engine_tests
+[1/11] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioDeviceManager.cpp.o
+[2/11] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/AudioEngine.cpp.o
+[3/11] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/CueEngine.cpp.o
+[4/11] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/MixerEngine.cpp.o
+[5/11] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/DeckEngine.cpp.o
+[6/11] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/OutputRouter.cpp.o
+[7/11] Building CXX object CMakeFiles/hype_engine.dir/Source/Engine/TrackLoader.cpp.o
+[8/11] Linking CXX static library libhype_engine.a
+[9/11] Building CXX object CMakeFiles/hype_engine_tests.dir/Tests/AllocationTracker.cpp.o
+[10/11] Building CXX object CMakeFiles/hype_engine_tests.dir/Tests/EngineTests.cpp.o
+[11/11] Linking CXX executable hype_engine_tests

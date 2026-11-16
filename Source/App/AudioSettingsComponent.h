@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/AudioDeviceController.h"
+#include "Api/HypeEngineApi.h"
 #include "Widgets.h"
 
 namespace hype::ui
@@ -13,7 +13,7 @@ namespace hype::ui
 class AudioSettingsComponent : public juce::Component
 {
 public:
-    explicit AudioSettingsComponent (AudioDeviceController&);
+    explicit AudioSettingsComponent (DeviceControl&);
 
     /** Re-reads everything from the controller (call when the device state changes). */
     void refresh();
@@ -24,11 +24,11 @@ public:
     std::function<void()> onSettingsChanged;   // e.g. persist
 
 private:
-    void applyChange (const std::function<void (AudioDeviceController::Settings&)>& change);
+    void applyChange (const std::function<void (DeviceSettings&)>& change);
     void fillPairCombo (juce::ComboBox&, int selectedFirstChannel, const juce::StringArray& channelNames);
     void rebuildChannelToggles (const juce::StringArray& names, const juce::BigInteger& active);
 
-    AudioDeviceController& controller;
+    DeviceControl& controller;
     bool updating = false;
 
     juce::ComboBox typeBox, deviceBox, rateBox, bufferBox, masterBox, phonesBox;

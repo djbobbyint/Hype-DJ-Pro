@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/AudioEngine.h"
+#include "Api/HypeEngineApi.h"
 #include "Widgets.h"
 
 namespace hype::ui
@@ -15,10 +15,10 @@ juce::Colour bandColour (uint8_t low, uint8_t mid, uint8_t high, float brightnes
 class ScrollingWaveform : public juce::Component
 {
 public:
-    ScrollingWaveform (AudioEngine&, int deckIndex);
+    ScrollingWaveform (EngineInterface&, int deckIndex);
 
     /** Called by the UI timer with the latest deck state. */
-    void update (const Deck::State&, const LoadedTrack::Ptr& track);
+    void update (const DeckState&, std::shared_ptr<const WaveformData> waveform);
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -27,10 +27,10 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
-    AudioEngine& engine;
+    EngineInterface& engine;
     const int deck;
-    Deck::State state;
-    LoadedTrack::Ptr track;
+    DeckState state;
+    std::shared_ptr<const WaveformData> waveform;
     double visibleSeconds = 8.0;
     int lastDragX = 0;
 };
@@ -39,9 +39,9 @@ private:
 class OverviewWaveform : public juce::Component, public juce::SettableTooltipClient
 {
 public:
-    OverviewWaveform (AudioEngine&, int deckIndex);
+    OverviewWaveform (EngineInterface&, int deckIndex);
 
-    void update (const Deck::State&, const LoadedTrack::Ptr& track);
+    void update (const DeckState&, std::shared_ptr<const WaveformData> waveform);
 
     void paint (juce::Graphics&) override;
     void resized() override { cacheValid = false; }
@@ -52,10 +52,10 @@ private:
     void rebuildCache();
     void seekTo (int x);
 
-    AudioEngine& engine;
+    EngineInterface& engine;
     const int deck;
-    Deck::State state;
-    LoadedTrack::Ptr track;
+    DeckState state;
+    std::shared_ptr<const WaveformData> waveform;
     juce::Image cache;
     bool cacheValid = false;
 };

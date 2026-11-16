@@ -1,5 +1,4 @@
 #include "MixerComponent.h"
-#include "Engine/ThreeBandEq.h"
 
 namespace hype::ui
 {
@@ -7,7 +6,7 @@ namespace
 {
     juce::String dbText (double v)
     {
-        if (v <= ThreeBandEq::minGainDb + 0.01) return "KILL";
+        if (v <= ranges::eqMinDb + 0.01) return "KILL";
         return (v > 0.05 ? "+" : "") + juce::String (v, 1) + " dB";
     }
 
@@ -20,25 +19,26 @@ namespace
 }
 
 //==============================================================================
-ChannelStrip::ChannelStrip (Mixer& m, Deck& d, int i)
-    : mixer (m), deck (d), index (i), accent (Palette::forDeck (i)),
+ChannelStrip::ChannelStrip (MixerControl& m, CueControl& c, int i)
+    : mixer (m), cue (c), index (i), accent (Palette::forDeck (i)),
       gain ("Gain", accent, true), high ("Hi", accent, true), mid ("Mid", accent, true), low ("Low", accent, true)
 {
     // Channel gain (trim): -24..+12 dB with 0 dB at the centre of travel.
-    gain.slider.setRange (config::minTrimDb, config::maxTrimDb, 0.1);
+    gain.slider.setRange (ranges::channelGainMinDb, ranges::channelGainMaxDb, 0.1);
     gain.slider.setSkewFactorFromMidPoint (0.0);
     gain.slider.setDoubleClickReturnValue (true, 0.0);
     gain.formatValue = [] (double v) { return (v > 0.05 ? "+" : "") + juce::String (v, 1) + " dB"; };
-    gain.slider.onValueChange = [this] { deck.setTrimDb ((float) gain.slider.getValue()); gain.repaint(); };
+    gain.slider.onValueChange = [this] { mixer.setChannelGainDb (index, (float) gain.slider.getValue()); gain.repaint(); };
     gain.slider.setTooltip ("Channel gain (trim)");
     addAndMakeVisible (gain);
 
     Knob* eqKnobs[3] { &low, &mid, &high };
     juce::TextButton* kills[3] { &killLow, &killMid, &killHigh };
-    for (int band = 0; band < 3; ++band)
+    for (int b = 0; b < 3; ++b)
     {
-        auto* k = eqKnobs[band];
-        k->slider.setRange (ThreeBandEq::minGainDb, ThreeBandEq::maxGainDb, 0.1);
+        const auto band = (EqBand) b;
+        auto* k = eqKnobs[b];
+        k->slider.setRange (ranges::eqMinDb, ranges::eqMaxDb, 0.1);
         k->slider.setSkewFactorFromMidPoint (0.0);
         k->slider.setDoubleClickReturnValue (true, 0.0);
         k->formatValue = dbText;
@@ -46,7 +46,7 @@ ChannelStrip::ChannelStrip (Mixer& m, Deck& d, int i)
         k->slider.setTooltip ("EQ: turn fully left to kill the band. Double-click to reset.");
         addAndMakeVisible (*k);
 
-        auto* kb = kills[band];
+        auto* kb = kills[b];
         kb->setClickingTogglesState (true);
         kb->setColour (juce::TextButton::buttonOnColourId, Palette::danger);
         kb->setTooltip ("Kill this band");
@@ -58,7 +58,7 @@ ChannelStrip::ChannelStrip (Mixer& m, Deck& d, int i)
     cueButton.setClickingTogglesState (true);
     cueButton.setColour (juce::TextButton::buttonOnColourId, Palette::headphones);
     cueButton.setTooltip ("Headphone cue: pre-listen this deck in the headphones (does not affect the master)");
-    cueButton.onClick = [this] { mixer.setCueEnabled (index, cueButton.getToggleState()); };
+    cueButton.onClick = [this] { cue.setCueEnabled (index, cueButton.getToggleState()); };
     addAndMakeVisible (cueButton);
 
     fader.setSliderStyle (juce::Slider::LinearVertical);
@@ -92,14 +92,14 @@ void ChannelStrip::syncFromEngine()
             sl.setValue (v, juce::dontSendNotification);
     };
     setIfIdle (fader, mixer.getChannelVolume (index));
-    setIfIdle (gain.slider, deck.getTrimDb());
-    cueButton.setToggleState (mixer.isCueEnabled (index), juce::dontSendNotification);
-    setIfIdle (high.slider, mixer.getEqGainDb (index, ThreeBandEq::high));
-    setIfIdle (mid.slider, mixer.getEqGainDb (index, ThreeBandEq::mid));
-    setIfIdle (low.slider, mixer.getEqGainDb (index, ThreeBandEq::low));
-    killHigh.setToggleState (mixer.isEqKilled (index, ThreeBandEq::high), juce::dontSendNotification);
-    killMid.setToggleState (mixer.isEqKilled (index, ThreeBandEq::mid), juce::dontSendNotification);
-    killLow.setToggleState (mixer.isEqKilled (index, ThreeBandEq::low), juce::dontSendNotification);
+    setIfIdle (gain.slider, mixer.getChannelGainDb (index));
+    cueButton.setToggleState (cue.isCueEnabled (index), juce::dontSendNotification);
+    setIfIdle (high.slider, mixer.getEqGainDb (index, EqBand::high));
+    setIfIdle (mid.slider, mixer.getEqGainDb (index, EqBand::mid));
+    setIfIdle (low.slider, mixer.getEqGainDb (index, EqBand::low));
+    killHigh.setToggleState (mixer.isEqKilled (index, EqBand::high), juce::dontSendNotification);
+    killMid.setToggleState (mixer.isEqKilled (index, EqBand::mid), juce::dontSendNotification);
+    killLow.setToggleState (mixer.isEqKilled (index, EqBand::low), juce::dontSendNotification);
 }
 
 void ChannelStrip::updateMeter (float peak)
@@ -141,9 +141,9 @@ void ChannelStrip::resized()
 }
 
 //==============================================================================
-MixerComponent::MixerComponent (AudioEngine& e)
-    : engine (e), mixer (e.getMixer()),
-      stripA (e.getMixer(), e.getDeck (0), 0), stripB (e.getMixer(), e.getDeck (1), 1),
+MixerComponent::MixerComponent (EngineInterface& e)
+    : engine (e), mixer (e.mixer()), cue (e.cue()),
+      stripA (e.mixer(), e.cue(), 0), stripB (e.mixer(), e.cue(), 1),
       master ("Volume", Palette::text, false), cueMix ("Cue / Mst", Palette::headphones, false),
       cueLevel ("Phones", Palette::headphones, false), curve ("Curve", Palette::text, false)
 {
@@ -151,25 +151,25 @@ MixerComponent::MixerComponent (AudioEngine& e)
     addAndMakeVisible (stripB);
 
     master.slider.setRange (0.0, 2.0, 0.001);
-    master.slider.setValue (mixer.getMasterGain(), juce::dontSendNotification);
+    master.slider.setValue (mixer.getMasterVolume(), juce::dontSendNotification);
     master.slider.setDoubleClickReturnValue (true, 1.0);
     master.formatValue = gainToDbText;
-    master.slider.onValueChange = [this] { mixer.setMasterGain ((float) master.slider.getValue()); master.repaint(); };
+    master.slider.onValueChange = [this] { mixer.setMasterVolume ((float) master.slider.getValue()); master.repaint(); };
     master.slider.setTooltip ("Master volume");
 
     cueMix.slider.setRange (0.0, 1.0, 0.001);
-    cueMix.slider.setValue (mixer.getCueMix(), juce::dontSendNotification);
+    cueMix.slider.setValue (cue.getCueMix(), juce::dontSendNotification);
     cueMix.slider.setDoubleClickReturnValue (true, 0.0);
     cueMix.formatValue = [] (double v) { return v < 0.02 ? juce::String ("CUE") : v > 0.98 ? juce::String ("MASTER")
                                                                                             : juce::String (juce::roundToInt (v * 100)) + "% mst"; };
-    cueMix.slider.onValueChange = [this] { mixer.setCueMix ((float) cueMix.slider.getValue()); cueMix.repaint(); };
+    cueMix.slider.onValueChange = [this] { cue.setCueMix ((float) cueMix.slider.getValue()); cueMix.repaint(); };
     cueMix.slider.setTooltip ("Headphone mix: cued channels <-> master");
 
     cueLevel.slider.setRange (0.0, 2.0, 0.001);
-    cueLevel.slider.setValue (mixer.getCueGain(), juce::dontSendNotification);
+    cueLevel.slider.setValue (cue.getCueLevel(), juce::dontSendNotification);
     cueLevel.slider.setDoubleClickReturnValue (true, 1.0);
     cueLevel.formatValue = gainToDbText;
-    cueLevel.slider.onValueChange = [this] { mixer.setCueGain ((float) cueLevel.slider.getValue()); cueLevel.repaint(); };
+    cueLevel.slider.onValueChange = [this] { cue.setCueLevel ((float) cueLevel.slider.getValue()); cueLevel.repaint(); };
     cueLevel.slider.setTooltip ("Headphone volume");
 
     curve.slider.setRange (0.0, 1.0, 0.001);
@@ -185,7 +185,7 @@ MixerComponent::MixerComponent (AudioEngine& e)
     splitButton.setClickingTogglesState (true);
     splitButton.setColour (juce::TextButton::buttonOnColourId, Palette::headphones);
     splitButton.setTooltip ("Split cue: cue in the left ear, master in the right ear");
-    splitButton.onClick = [this] { mixer.setSplitCue (splitButton.getToggleState()); };
+    splitButton.onClick = [this] { cue.setSplitCue (splitButton.getToggleState()); };
     addAndMakeVisible (splitButton);
 
     reverseButton.setClickingTogglesState (true);
@@ -229,14 +229,14 @@ void MixerComponent::syncFromEngine()
     };
     setIfIdle (crossfader, mixer.getCrossfader());
     setIfIdle (curve.slider, mixer.getCrossfaderCurveShape());
-    setIfIdle (master.slider, mixer.getMasterGain());
-    setIfIdle (cueMix.slider, mixer.getCueMix());
-    setIfIdle (cueLevel.slider, mixer.getCueGain());
-    splitButton.setToggleState (mixer.isSplitCue(), juce::dontSendNotification);
+    setIfIdle (master.slider, mixer.getMasterVolume());
+    setIfIdle (cueMix.slider, cue.getCueMix());
+    setIfIdle (cueLevel.slider, cue.getCueLevel());
+    splitButton.setToggleState (cue.isSplitCue(), juce::dontSendNotification);
     reverseButton.setToggleState (mixer.isCrossfaderReversed(), juce::dontSendNotification);
 }
 
-void MixerComponent::update (const Mixer::Meters& m)
+void MixerComponent::update (const MixerMeters& m, const CueMeters& c)
 {
     if (++updates % 6 == 0)   // ~10x per second
         syncFromEngine();
@@ -244,7 +244,7 @@ void MixerComponent::update (const Mixer::Meters& m)
     stripA.updateMeter (m.channelPeak[0]);
     stripB.updateMeter (m.channelPeak[1]);
     masterMeter.setLevels (m.masterPeakL, m.masterPeakR, m.masterClipped);
-    cueMeter.setLevels (m.cuePeakL, m.cuePeakR);
+    cueMeter.setLevels (c.peakL, c.peakR);
     const bool nowLimiting = m.limiterReductionDb > 0.5f;
     if (nowLimiting != limiting)
     {

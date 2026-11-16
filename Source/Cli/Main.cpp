@@ -25,7 +25,7 @@ juce::String formatTime (double seconds)
     return juce::String (m).paddedLeft ('0', 2) + ":" + juce::String (s, 2).paddedLeft ('0', 5);
 }
 
-void printDeck (const char* name, const Deck::State& s)
+void printDeck (const char* name, const DeckState& s)
 {
     std::cout << "Deck " << name << ": ";
     if (! s.loaded) { std::cout << "(empty)\n"; return; }
@@ -94,23 +94,23 @@ void handleCommand (AudioEngine& engine, const juce::String& line, bool& quit)
     }
     if (cmd == "device")
     {
-        const auto d = engine.getDeviceStatus();
-        std::cout << (d.open ? "Open: " : "Closed: ") << d.typeName << " / " << d.deviceName << "  "
-                  << d.sampleRate << " Hz, " << d.bufferSize << " frames, " << d.numOutputChannels << " outs, "
-                  << juce::String (d.outputLatencyMs, 1) << " ms latency, xruns " << d.xruns
+        const auto d = engine.devices().getStatus();
+        std::cout << (d.state == DeviceState::running ? "Open: " : "Not running: ") << d.typeName << " / " << d.deviceName << "  "
+                  << d.sampleRate << " Hz, " << d.bufferSize << " frames, " << d.numActiveOutputs << " outs, "
+                  << juce::String (d.latencyMs, 1) << " ms latency, xruns " << d.xruns
                   << ", cpu " << juce::String (d.cpuLoad * 100.0, 1) << "%\n";
         return;
     }
     if (cmd == "xf")      { mixer.setCrossfader (arg (1).getFloatValue()); return; }
-    if (cmd == "master")  { mixer.setMasterGain (arg (1).getFloatValue()); return; }
-    if (cmd == "cuemix")  { mixer.setCueMix (arg (1).getFloatValue()); return; }
-    if (cmd == "cuegain") { mixer.setCueGain (arg (1).getFloatValue()); return; }
+    if (cmd == "master")  { mixer.setMasterVolume (arg (1).getFloatValue()); return; }
+    if (cmd == "cuemix")  { engine.cue().setCueMix (arg (1).getFloatValue()); return; }
+    if (cmd == "cuegain") { engine.cue().setCueLevel (arg (1).getFloatValue()); return; }
     if (cmd == "curve")
     {
         const auto c = arg (1).toLowerCase();
-        mixer.setCrossfaderCurve (c == "cut" ? Mixer::CrossfaderCurve::Cut
-                                : c == "linear" ? Mixer::CrossfaderCurve::Linear
-                                                : Mixer::CrossfaderCurve::Smooth);
+        mixer.setCrossfaderCurve (c == "cut" ? CrossfaderCurve::Cut
+                                : c == "linear" ? CrossfaderCurve::Linear
+                                                : CrossfaderCurve::Smooth);
         return;
     }
     if (cmd == "sync" || cmd == "lock" || cmd == "qplay")
@@ -134,12 +134,11 @@ void handleCommand (AudioEngine& engine, const juce::String& line, bool& quit)
     if      (action == "load")
     {
         const auto file = juce::File::getCurrentWorkingDirectory().getChildFile (tokens.joinIntoString (" ", 2).unquoted());
-        engine.loadTrackAsync (d, file, [d] (int, const AudioFileDecoder::Result& r)
+        engine.loadTrack (d, file, [d] (int, const LoadResult& r)
         {
-            if (r.wasOk())
-                std::cout << "\n[Deck " << (d == 0 ? "A" : "B") << " loaded: " << r.track->getInfo().title
-                          << " | " << r.track->getInfo().decoderName << " | "
-                          << juce::String (r.track->getInfo().bpm, 2) << " bpm]\n> " << std::flush;
+            if (r.ok)
+                std::cout << "\n[Deck " << (d == 0 ? "A" : "B") << " loaded: " << r.title
+                          << " | " << r.decoderName << " | " << juce::String (r.bpm, 2) << " bpm]\n> " << std::flush;
             else
                 std::cout << "\n[Deck " << (d == 0 ? "A" : "B") << " load failed: " << r.error << "]\n> " << std::flush;
         });
@@ -163,15 +162,15 @@ void handleCommand (AudioEngine& engine, const juce::String& line, bool& quit)
     else if (action == "bend")     deck.setPitchBend (value.getDoubleValue());
     else if (action == "keylock")  deck.setKeyLock (value.equalsIgnoreCase ("on"));
     else if (action == "key")      deck.setKeyShiftSemitones (value.getDoubleValue());
-    else if (action == "trim")     deck.setTrimDb (value.getFloatValue());
+    else if (action == "trim")     mixer.setChannelGainDb (d, value.getFloatValue());
     else if (action == "vol")      mixer.setChannelVolume (d, value.getFloatValue());
-    else if (action == "pfl")      mixer.setCueEnabled (d, value.equalsIgnoreCase ("on"));
-    else if (action == "direct")   mixer.setDirectOutput (d, value.getIntValue(), arg (3).getIntValue());
+    else if (action == "pfl")      engine.cue().setCueEnabled (d, value.equalsIgnoreCase ("on"));
+    else if (action == "direct")   engine.getRouter().setDirectOutput (d, value.getIntValue(), arg (3).getIntValue());
     else if (action == "grid")     deck.setBeatGrid (value.getDoubleValue(), arg (3).getDoubleValue());
     else if (action == "assign")
-        mixer.setCrossfaderAssign (d, value.equalsIgnoreCase ("a") ? Mixer::CrossfaderAssign::A
-                                    : value.equalsIgnoreCase ("b") ? Mixer::CrossfaderAssign::B
-                                                                   : Mixer::CrossfaderAssign::Thru);
+        mixer.setCrossfaderAssign (d, value.equalsIgnoreCase ("a") ? CrossfaderAssign::A
+                                    : value.equalsIgnoreCase ("b") ? CrossfaderAssign::B
+                                                                   : CrossfaderAssign::Thru);
     else
         std::cout << "Unknown deck action (type 'help')\n";
 }
@@ -266,7 +265,7 @@ int main (int argc, char** argv)
 
     if (args.contains ("--list-devices"))
     {
-        auto& dm = engine.getDeviceManager();
+        auto& dm = engine.getDevices().getJuceDeviceManager();
         for (auto* type : dm.getAvailableDeviceTypes())
         {
             type->scanForDevices();
@@ -280,12 +279,13 @@ int main (int argc, char** argv)
     const auto renderPath = option ("--render");
     const auto secondsStr = option ("--seconds");
 
-    AudioEngine::DeviceSettings settings;
-    settings.deviceType   = option ("--type");
-    settings.outputDevice = option ("--device");
+    DeviceSettings settings;
+    settings.typeName   = option ("--type");
+    settings.deviceName = option ("--device");
+    settings.fallbackToDefaultDevice = false;
     if (auto v = option ("--rate");   v.isNotEmpty()) settings.sampleRate = v.getDoubleValue();
     if (auto v = option ("--buffer"); v.isNotEmpty()) settings.bufferSize = v.getIntValue();
-    if (auto v = option ("--outs");   v.isNotEmpty()) settings.numOutputChannels = v.getIntValue();
+    if (auto v = option ("--outs");   v.isNotEmpty() && v.getIntValue() < 4) settings.cueFirstChannel = -1;   // stereo: master only
 
     const auto cwd = juce::File::getCurrentWorkingDirectory();
 
@@ -297,7 +297,7 @@ int main (int argc, char** argv)
                               cwd.getChildFile (args[0]), cwd.getChildFile (args[1]));
     }
 
-    const auto error = engine.openDevice (settings);
+    const auto error = engine.devices().apply (settings);
     if (error.isNotEmpty())
     {
         std::cerr << "Could not open audio device: " << error << "\n"
@@ -305,8 +305,6 @@ int main (int argc, char** argv)
         return 1;
     }
 
-    if (engine.getDeviceStatus().numOutputChannels < 4)
-        engine.getMixer().setCueOutput (-1, -1);   // stereo device: master only
 
     bool quit = false;
     handleCommand (engine, "device", quit);
@@ -323,6 +321,6 @@ int main (int argc, char** argv)
         handleCommand (engine, juce::String (line), quit);
     }
 
-    engine.closeDevice();
+    engine.devices().closeDevice();
     return 0;
 }

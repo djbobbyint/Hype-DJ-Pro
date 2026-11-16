@@ -1,5 +1,4 @@
 #include "UiSelfTest.h"
-#include "Engine/ThreeBandEq.h"
 
 #include <iostream>
 
@@ -10,7 +9,7 @@ namespace
     bool near (double a, double b, double tol) { return std::abs (a - b) <= tol; }
 }
 
-UiSelfTest::UiSelfTest (juce::Component& r, AudioEngine& e) : root (r), engine (e)
+UiSelfTest::UiSelfTest (juce::Component& r, EngineInterface& e) : root (r), engine (e)
 {
     build();
 }
@@ -83,9 +82,10 @@ void UiSelfTest::setSlider (const juce::String& id, double value)
 
 void UiSelfTest::build()
 {
-    auto& a = engine.getDeck (0);
-    auto& b = engine.getDeck (1);
-    auto& mixer = engine.getMixer();
+    auto& a = engine.deck (0);
+    auto& b = engine.deck (1);
+    auto& mixer = engine.mixer();
+    auto& cue = engine.cue();
 
     auto add = [this] (juce::String name, std::function<void()> action, std::function<bool (juce::String&)> check)
     {
@@ -124,29 +124,29 @@ void UiSelfTest::build()
 
     // ---- Channel strips
     add ("A GAIN knob sets channel gain +3 dB", [this] { setSlider ("A.gain", 3.0); },
-         [&a] (juce::String&) { return near (a.getTrimDb(), 3.0, 0.05); });
-    add ("A LOW knob fully left kills the low band", [this] { setSlider ("A.eq.low", ThreeBandEq::minGainDb); },
-         [&mixer] (juce::String&) { return mixer.getEqGainDb (0, ThreeBandEq::low) <= ThreeBandEq::minGainDb; });
+         [&mixer] (juce::String&) { return near (mixer.getChannelGainDb (0), 3.0, 0.05); });
+    add ("A LOW knob fully left kills the low band", [this] { setSlider ("A.eq.low", ranges::eqMinDb); },
+         [&mixer] (juce::String&) { return mixer.getEqGainDb (0, EqBand::low) <= ranges::eqMinDb; });
     add ("A MID knob -6 dB", [this] { setSlider ("A.eq.mid", -6.0); },
-         [&mixer] (juce::String&) { return near (mixer.getEqGainDb (0, ThreeBandEq::mid), -6.0, 0.05); });
+         [&mixer] (juce::String&) { return near (mixer.getEqGainDb (0, EqBand::mid), -6.0, 0.05); });
     add ("A HI kill button", [this] { click ("A.kill.high"); },
-         [&mixer] (juce::String&) { return mixer.isEqKilled (0, ThreeBandEq::high); });
+         [&mixer] (juce::String&) { return mixer.isEqKilled (0, EqBand::high); });
     add ("B HI knob +4 dB", [this] { setSlider ("B.eq.high", 4.0); },
-         [&mixer] (juce::String&) { return near (mixer.getEqGainDb (1, ThreeBandEq::high), 4.0, 0.05); });
+         [&mixer] (juce::String&) { return near (mixer.getEqGainDb (1, EqBand::high), 4.0, 0.05); });
     add ("A channel fader to half", [this] { setSlider ("A.volume", 0.5); },
          [&mixer] (juce::String&) { return near (mixer.getChannelVolume (0), 0.5, 1e-3); });
     add ("B channel fader to 0.8", [this] { setSlider ("B.volume", 0.8); },
          [&mixer] (juce::String&) { return near (mixer.getChannelVolume (1), 0.8, 1e-3); });
 
     // ---- Headphones
-    add ("B headphone CUE button", [this] { click ("B.phones"); }, [&mixer] (juce::String&) { return mixer.isCueEnabled (1); });
+    add ("B headphone CUE button", [this] { click ("B.phones"); }, [&cue] (juce::String&) { return cue.isCueEnabled (1); });
     add ("A headphone CUE button (both cued)", [this] { click ("A.phones"); },
-         [&mixer] (juce::String&) { return mixer.isCueEnabled (0) && mixer.isCueEnabled (1); });
+         [&cue] (juce::String&) { return cue.isCueEnabled (0) && cue.isCueEnabled (1); });
     add ("Headphone cue/master mix", [this] { setSlider ("phones.mix", 0.25); },
-         [&mixer] (juce::String&) { return near (mixer.getCueMix(), 0.25, 1e-3); });
+         [&cue] (juce::String&) { return near (cue.getCueMix(), 0.25, 1e-3); });
     add ("Headphone level", [this] { setSlider ("phones.level", 1.5); },
-         [&mixer] (juce::String&) { return near (mixer.getCueGain(), 1.5, 1e-3); });
-    add ("Split cue button", [this] { click ("phones.split"); }, [&mixer] (juce::String&) { return mixer.isSplitCue(); });
+         [&cue] (juce::String&) { return near (cue.getCueLevel(), 1.5, 1e-3); });
+    add ("Split cue button", [this] { click ("phones.split"); }, [&cue] (juce::String&) { return cue.isSplitCue(); });
 
     // ---- Crossfader & master
     add ("Crossfader to deck B", [this] { setSlider ("xfader", 1.0); },
@@ -156,7 +156,7 @@ void UiSelfTest::build()
     add ("Crossfader reverse button toggles", [this, &mixer] { reverseBefore = mixer.isCrossfaderReversed(); click ("xfader.reverse"); },
          [this, &mixer] (juce::String&) { return mixer.isCrossfaderReversed() != reverseBefore; });
     add ("Master volume knob", [this] { setSlider ("master.volume", 0.7); },
-         [&mixer] (juce::String&) { return near (mixer.getMasterGain(), 0.7, 1e-3); });
+         [&mixer] (juce::String&) { return near (mixer.getMasterVolume(), 0.7, 1e-3); });
 
     // ---- Cue / seek / jog on deck A
     add ("A CUE while playing returns to the cue point and pauses", [this] { press ("A.cue"); release ("A.cue"); },

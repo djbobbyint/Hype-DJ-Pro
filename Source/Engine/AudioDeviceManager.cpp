@@ -1,4 +1,4 @@
-#include "AudioDeviceController.h"
+#include "AudioDeviceManager.h"
 
 namespace hype
 {
@@ -9,21 +9,29 @@ namespace
     constexpr int rescanEveryTicks = 4;         // rescan drivers every ~2 s while recovering
 }
 
-AudioDeviceController::AudioDeviceController (AudioEngine& e)
-    : engine (e), deviceManager (e.getDeviceManager())
+AudioDeviceManager::AudioDeviceManager (AudioDeviceHost& h, OutputRouter& r)
+    : host (h), router (r)
 {
     deviceManager.addChangeListener (this);
-    engine.attachToDeviceManager();
+    attachCallback();
 }
 
-AudioDeviceController::~AudioDeviceController()
+AudioDeviceManager::~AudioDeviceManager()
 {
     stopTimer();
     deviceManager.removeChangeListener (this);
+    deviceManager.removeAudioCallback (&host.getAudioCallback());
+    deviceManager.closeAudioDevice();
+}
+
+void AudioDeviceManager::attachCallback()
+{
+    deviceManager.removeAudioCallback (&host.getAudioCallback());
+    deviceManager.addAudioCallback (&host.getAudioCallback());
 }
 
 //==============================================================================
-juce::StringArray AudioDeviceController::getDeviceTypes() const
+juce::StringArray AudioDeviceManager::getDeviceTypes() const
 {
     juce::StringArray names;
     for (auto* type : deviceManager.getAvailableDeviceTypes())
@@ -31,7 +39,7 @@ juce::StringArray AudioDeviceController::getDeviceTypes() const
     return names;
 }
 
-juce::StringArray AudioDeviceController::getDeviceNames (const juce::String& typeName) const
+juce::StringArray AudioDeviceManager::getDeviceNames (const juce::String& typeName) const
 {
     for (auto* type : deviceManager.getAvailableDeviceTypes())
         if (type->getTypeName() == typeName)
@@ -39,7 +47,7 @@ juce::StringArray AudioDeviceController::getDeviceNames (const juce::String& typ
     return {};
 }
 
-void AudioDeviceController::refreshDevices()
+void AudioDeviceManager::refreshDevices()
 {
     for (auto* type : deviceManager.getAvailableDeviceTypes())
         type->scanForDevices();
@@ -47,28 +55,28 @@ void AudioDeviceController::refreshDevices()
     notify();
 }
 
-juce::StringArray AudioDeviceController::getOutputChannelNames() const
+juce::StringArray AudioDeviceManager::getOutputChannelNames() const
 {
     if (auto* device = deviceManager.getCurrentAudioDevice())
         return device->getOutputChannelNames();
     return {};
 }
 
-juce::BigInteger AudioDeviceController::getActiveOutputChannels() const
+juce::BigInteger AudioDeviceManager::getActiveOutputChannels() const
 {
     if (auto* device = deviceManager.getCurrentAudioDevice())
         return device->getActiveOutputChannels();
     return {};
 }
 
-juce::Array<double> AudioDeviceController::getAvailableSampleRates() const
+juce::Array<double> AudioDeviceManager::getAvailableSampleRates() const
 {
     if (auto* device = deviceManager.getCurrentAudioDevice())
         return device->getAvailableSampleRates();
     return {};
 }
 
-juce::Array<int> AudioDeviceController::getAvailableBufferSizes() const
+juce::Array<int> AudioDeviceManager::getAvailableBufferSizes() const
 {
     if (auto* device = deviceManager.getCurrentAudioDevice())
         return device->getAvailableBufferSizes();
@@ -76,7 +84,7 @@ juce::Array<int> AudioDeviceController::getAvailableBufferSizes() const
 }
 
 //==============================================================================
-juce::String AudioDeviceController::apply (const Settings& newSettings)
+juce::String AudioDeviceManager::apply (const DeviceSettings& newSettings)
 {
     settings = newSettings;
     wantDevice = true;
@@ -88,20 +96,20 @@ juce::String AudioDeviceController::apply (const Settings& newSettings)
     if (settings.fallbackToDefaultDevice && settings.deviceName.isNotEmpty())
     {
         if (openDevice (settings.typeName, {}, true).isEmpty())
-            setState (State::fallback, "\"" + settings.deviceName + "\" unavailable (" + error + ") - using the default device");
+            setState (DeviceState::fallback, "\"" + settings.deviceName + "\" unavailable (" + error + ") - using the default device");
         else
-            setState (State::recovering, error);
+            setState (DeviceState::recovering, error);
     }
     else
     {
-        setState (State::recovering, error);
+        setState (DeviceState::recovering, error);
     }
 
     startTimer (watchdogIntervalMs);
     return error;
 }
 
-juce::String AudioDeviceController::setOutputAssignment (int masterFirst, int cueFirst)
+juce::String AudioDeviceManager::setOutputAssignment (int masterFirst, int cueFirst)
 {
     settings.masterFirstChannel = masterFirst;
     settings.cueFirstChannel = cueFirst;
@@ -109,7 +117,7 @@ juce::String AudioDeviceController::setOutputAssignment (int masterFirst, int cu
     auto* device = deviceManager.getCurrentAudioDevice();
     if (device == nullptr)
     {
-        applyRoutingToMixer();
+        applyRouting();
         return {};
     }
 
@@ -124,23 +132,23 @@ juce::String AudioDeviceController::setOutputAssignment (int masterFirst, int cu
 
     if (! needsRestart)
     {
-        applyRoutingToMixer();
+        applyRouting();
         notify();
         return {};
     }
 
-    return openDevice (device->getTypeName(), device->getName(), state == State::fallback);
+    return openDevice (device->getTypeName(), device->getName(), state == DeviceState::fallback);
 }
 
-void AudioDeviceController::closeDevice()
+void AudioDeviceManager::closeDevice()
 {
     wantDevice = false;
     stopTimer();
     deviceManager.closeAudioDevice();
-    setState (State::noDevice, "Audio output disabled");
+    setState (DeviceState::noDevice, "Audio output disabled");
 }
 
-void AudioDeviceController::setWatchdogEnabled (bool shouldRun)
+void AudioDeviceManager::setWatchdogEnabled (bool shouldRun)
 {
     if (shouldRun && wantDevice)
         startTimer (watchdogIntervalMs);
@@ -149,7 +157,7 @@ void AudioDeviceController::setWatchdogEnabled (bool shouldRun)
 }
 
 //==============================================================================
-juce::String AudioDeviceController::openDevice (const juce::String& typeName, const juce::String& deviceName, bool isFallback)
+juce::String AudioDeviceManager::openDevice (const juce::String& typeName, const juce::String& deviceName, bool isFallback)
 {
     const auto& types = deviceManager.getAvailableDeviceTypes();   // creates the driver types on first use
 
@@ -218,22 +226,21 @@ juce::String AudioDeviceController::openDevice (const juce::String& typeName, co
         settings.deviceName = deviceName.isEmpty() ? juce::String() : name;
     }
 
-    engine.attachToDeviceManager();
-    applyRoutingToMixer();
-    lastCallbackCount = engine.getCallbackCount();
+    attachCallback();
+    applyRouting();
+    lastCallbackCount = host.getCallbackCount();
     stalledTicks = 0;
 
-    setState (isFallback ? State::fallback : State::running,
+    setState (isFallback ? DeviceState::fallback : DeviceState::running,
               isFallback ? "Using \"" + name + "\" until \"" + settings.deviceName + "\" is available again"
                          : juce::String());
     startTimer (watchdogIntervalMs);
     return {};
 }
 
-void AudioDeviceController::applyRoutingToMixer()
+void AudioDeviceManager::applyRouting()
 {
-    auto& mixer = engine.getMixer();
-    int available = AudioEngine::maxOutputChannels;
+    int available = 64;
     if (auto* device = deviceManager.getCurrentAudioDevice())
         available = device->getOutputChannelNames().size();
 
@@ -245,13 +252,13 @@ void AudioDeviceController::applyRoutingToMixer()
 
     int l, r;
     clampPair (settings.masterFirstChannel, l, r);
-    mixer.setMasterOutput (l, r);
+    router.setMasterOutput (l, r);
     clampPair (settings.cueFirstChannel, l, r);
-    mixer.setCueOutput (l, r);
+    router.setCueOutput (l, r);
 }
 
 //==============================================================================
-bool AudioDeviceController::isPreferredDeviceAvailable()
+bool AudioDeviceManager::isPreferredDeviceAvailable()
 {
     for (auto* type : deviceManager.getAvailableDeviceTypes())
     {
@@ -263,15 +270,15 @@ bool AudioDeviceController::isPreferredDeviceAvailable()
     return false;
 }
 
-bool AudioDeviceController::currentDeviceLooksDead()
+bool AudioDeviceManager::currentDeviceLooksDead()
 {
     auto* device = deviceManager.getCurrentAudioDevice();
-    if (device == nullptr || ! device->isOpen() || engine.hasDeviceError())
+    if (device == nullptr || ! device->isOpen() || host.hasDeviceError())
         return true;
 
     if (device->isPlaying())
     {
-        const auto count = engine.getCallbackCount();
+        const auto count = host.getCallbackCount();
         stalledTicks = (count == lastCallbackCount) ? stalledTicks + 1 : 0;
         lastCallbackCount = count;
         return stalledTicks >= stalledTicksBeforeLost;
@@ -279,42 +286,42 @@ bool AudioDeviceController::currentDeviceLooksDead()
     return true;
 }
 
-void AudioDeviceController::poll()
+void AudioDeviceManager::poll()
 {
     if (! wantDevice)
         return;
 
     // JUCE reopens the system default device by itself when the current one disappears.
     // Never let that happen silently: report it as a fallback, or close it if not allowed.
-    if (state == State::running && settings.deviceName.isNotEmpty())
+    if (state == DeviceState::running && settings.deviceName.isNotEmpty())
         if (auto* device = deviceManager.getCurrentAudioDevice(); device != nullptr && device->getName() != settings.deviceName)
         {
             if (settings.fallbackToDefaultDevice)
             {
-                applyRoutingToMixer();
-                lastCallbackCount = engine.getCallbackCount();
+                applyRouting();
+                lastCallbackCount = host.getCallbackCount();
                 stalledTicks = 0;
-                setState (State::fallback, "\"" + settings.deviceName + "\" was lost - using \"" + device->getName()
+                setState (DeviceState::fallback, "\"" + settings.deviceName + "\" was lost - using \"" + device->getName()
                                                + "\" until it is available again");
             }
             else
             {
                 deviceManager.closeAudioDevice();
                 ticksSinceRescan = rescanEveryTicks;
-                setState (State::recovering, "Audio device \"" + settings.deviceName + "\" was lost - reconnecting...");
+                setState (DeviceState::recovering, "Audio device \"" + settings.deviceName + "\" was lost - reconnecting...");
             }
         }
 
-    if ((state == State::running || state == State::fallback) && currentDeviceLooksDead())
+    if ((state == DeviceState::running || state == DeviceState::fallback) && currentDeviceLooksDead())
     {
         auto lostName = deviceManager.getCurrentAudioDevice() != nullptr ? deviceManager.getCurrentAudioDevice()->getName()
                                                                           : settings.deviceName;
         deviceManager.closeAudioDevice();
         ticksSinceRescan = rescanEveryTicks;   // rescan immediately
-        setState (State::recovering, "Audio device \"" + lostName + "\" was lost - reconnecting...");
+        setState (DeviceState::recovering, "Audio device \"" + lostName + "\" was lost - reconnecting...");
     }
 
-    if (state != State::recovering && state != State::fallback)
+    if (state != DeviceState::recovering && state != DeviceState::fallback)
         return;
 
     if (++ticksSinceRescan >= rescanEveryTicks)
@@ -324,57 +331,56 @@ void AudioDeviceController::poll()
             if (settings.typeName.isEmpty() || type->getTypeName() == settings.typeName)
                 type->scanForDevices();
     }
-    else if (state == State::fallback)
+    else if (state == DeviceState::fallback)
     {
         return;   // between rescans, nothing new to try
     }
 
     if (isPreferredDeviceAvailable() && openDevice (settings.typeName, settings.deviceName, false).isEmpty())
     {
-        setState (State::running, "Reconnected to \"" + deviceManager.getCurrentAudioDevice()->getName() + "\"");
+        setState (DeviceState::running, "Reconnected to \"" + deviceManager.getCurrentAudioDevice()->getName() + "\"");
         return;
     }
 
-    if (state == State::recovering && settings.fallbackToDefaultDevice && settings.deviceName.isNotEmpty())
+    if (state == DeviceState::recovering && settings.fallbackToDefaultDevice && settings.deviceName.isNotEmpty())
         openDevice (settings.typeName, {}, true);
 }
 
-void AudioDeviceController::changeListenerCallback (juce::ChangeBroadcaster*)
+void AudioDeviceManager::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     // Device opened/closed/removed: check immediately rather than waiting for the timer.
-    if (wantDevice && (state == State::running || state == State::fallback))
+    if (wantDevice && (state == DeviceState::running || state == DeviceState::fallback))
     {
         auto* device = deviceManager.getCurrentAudioDevice();
-        if (device == nullptr || (state == State::running && settings.deviceName.isNotEmpty()
+        if (device == nullptr || (state == DeviceState::running && settings.deviceName.isNotEmpty()
                                   && device->getName() != settings.deviceName))
             poll();
     }
     notify();
 }
 
-void AudioDeviceController::setState (State s, const juce::String& message)
+void AudioDeviceManager::setState (DeviceState s, const juce::String& message)
 {
     state = s;
     lastMessage = message;
     notify();
 }
 
-void AudioDeviceController::notify()
+void AudioDeviceManager::notify()
 {
     if (onStatusChanged)
         onStatusChanged();
 }
 
-AudioDeviceController::Status AudioDeviceController::getStatus() const
+DeviceStatus AudioDeviceManager::getStatus() const
 {
-    Status s;
+    DeviceStatus s;
     s.state = state;
     s.message = lastMessage;
     s.masterFirstChannel = settings.masterFirstChannel;
     s.cueFirstChannel = settings.cueFirstChannel;
-
-    const auto engineStatus = engine.getDeviceStatus();
-    s.cpuLoad = engineStatus.cpuLoad;
+    s.cpuLoad = host.getCpuLoad();
+    s.engineRunningWithoutOutput = host.isRunningWithoutOutput();
 
     if (auto* device = deviceManager.getCurrentAudioDevice())
     {
@@ -384,7 +390,8 @@ AudioDeviceController::Status AudioDeviceController::getStatus() const
         s.bufferSize = device->getCurrentBufferSizeSamples();
         s.numOutputChannels = device->getOutputChannelNames().size();
         s.numActiveOutputs = device->getActiveOutputChannels().countNumberOfSetBits();
-        s.latencyMs = engineStatus.outputLatencyMs;
+        if (s.sampleRate > 0)
+            s.latencyMs = 1000.0 * (device->getOutputLatencyInSamples() + s.bufferSize) / s.sampleRate;
         s.xruns = device->getXRunCount();
     }
     else
@@ -396,7 +403,7 @@ AudioDeviceController::Status AudioDeviceController::getStatus() const
 }
 
 //==============================================================================
-std::unique_ptr<juce::XmlElement> AudioDeviceController::createStateXml() const
+std::unique_ptr<juce::XmlElement> AudioDeviceManager::createStateXml() const
 {
     auto xml = std::make_unique<juce::XmlElement> ("HYPE_AUDIO");
     xml->setAttribute ("type", settings.typeName);
@@ -410,9 +417,9 @@ std::unique_ptr<juce::XmlElement> AudioDeviceController::createStateXml() const
     return xml;
 }
 
-juce::String AudioDeviceController::restoreFromXml (const juce::XmlElement* xml)
+juce::String AudioDeviceManager::restoreFromXml (const juce::XmlElement* xml)
 {
-    Settings s;
+    DeviceSettings s;
     if (xml != nullptr && xml->hasTagName ("HYPE_AUDIO"))
     {
         s.typeName = xml->getStringAttribute ("type");

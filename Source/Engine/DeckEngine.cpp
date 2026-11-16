@@ -1,4 +1,4 @@
-#include "Deck.h"
+#include "DeckEngine.h"
 
 #include <cmath>
 #include <limits>
@@ -22,13 +22,13 @@ namespace
     }
 }
 
-Deck::Deck (int deckIndex)
+DeckEngine::DeckEngine (int deckIndex)
     : index (deckIndex), stretcher (createDefaultTimeStretcher())
 {
     prepare (48000.0);
 }
 
-Deck::~Deck()
+DeckEngine::~DeckEngine()
 {
     // Drain anything still in flight; no audio callback can be running by now.
     Command c;
@@ -50,13 +50,13 @@ Deck::~Deck()
 // Control side
 //==============================================================================
 
-bool Deck::push (const Command& c)
+bool DeckEngine::push (const Command& c)
 {
     const juce::SpinLock::ScopedLockType sl (producerLock);
     return commandQueue.push (c);
 }
 
-bool Deck::loadTrack (LoadedTrack::Ptr newTrack)
+bool DeckEngine::loadTrack (LoadedTrack::Ptr newTrack)
 {
     if (newTrack == nullptr)
         return eject();
@@ -84,7 +84,7 @@ bool Deck::loadTrack (LoadedTrack::Ptr newTrack)
     return true;
 }
 
-bool Deck::eject()
+bool DeckEngine::eject()
 {
     Command c { CommandType::Load };
     c.generation = nextGeneration.fetch_add (1);
@@ -98,30 +98,36 @@ bool Deck::eject()
     return push (c);
 }
 
-LoadedTrack::Ptr Deck::getDisplayTrack() const
+std::shared_ptr<const WaveformData> DeckEngine::getWaveform() const
+{
+    auto t = getDisplayTrack();
+    return t != nullptr ? t->getWaveform() : nullptr;
+}
+
+LoadedTrack::Ptr DeckEngine::getDisplayTrack() const
 {
     const int loaded = pubGeneration.load (std::memory_order_acquire);
     const juce::SpinLock::ScopedLockType sl (infoLock);
     return pendingTrackGeneration == loaded ? pendingTrack : nullptr;
 }
 
-bool Deck::play (int64_t at)            { Command c { CommandType::Play };  c.atSample = at; return push (c); }
-bool Deck::pause (int64_t at)           { Command c { CommandType::Pause }; c.atSample = at; return push (c); }
-bool Deck::togglePlayPause()            { return push ({ CommandType::TogglePlay }); }
-bool Deck::stop()                       { return push ({ CommandType::Stop }); }
-bool Deck::cueDown()                    { return push ({ CommandType::CueDown }); }
-bool Deck::cueUp()                      { return push ({ CommandType::CueUp }); }
-bool Deck::setCuePoint()                { return push ({ CommandType::SetCue }); }
-bool Deck::returnToCue()                { return push ({ CommandType::ReturnToCue }); }
+bool DeckEngine::play (int64_t at)            { Command c { CommandType::Play };  c.atSample = at; return push (c); }
+bool DeckEngine::pause (int64_t at)           { Command c { CommandType::Pause }; c.atSample = at; return push (c); }
+bool DeckEngine::togglePlayPause()            { return push ({ CommandType::TogglePlay }); }
+bool DeckEngine::stop()                       { return push ({ CommandType::Stop }); }
+bool DeckEngine::cueDown()                    { return push ({ CommandType::CueDown }); }
+bool DeckEngine::cueUp()                      { return push ({ CommandType::CueUp }); }
+bool DeckEngine::setCuePoint()                { return push ({ CommandType::SetCue }); }
+bool DeckEngine::returnToCue()                { return push ({ CommandType::ReturnToCue }); }
 
-bool Deck::setCuePointSeconds (double s)
+bool DeckEngine::setCuePointSeconds (double s)
 {
     Command c { CommandType::SetCueAt };
     c.value = s;
     return push (c);
 }
 
-bool Deck::seekToSeconds (double s, int64_t at)
+bool DeckEngine::seekToSeconds (double s, int64_t at)
 {
     Command c { CommandType::SeekAbsoluteSeconds };
     c.value = s;
@@ -129,21 +135,21 @@ bool Deck::seekToSeconds (double s, int64_t at)
     return push (c);
 }
 
-bool Deck::seekToNormalised (double p)
+bool DeckEngine::seekToNormalised (double p)
 {
     Command c { CommandType::SeekNormalised };
     c.value = juce::jlimit (0.0, 1.0, p);
     return push (c);
 }
 
-bool Deck::seekRelativeSeconds (double d)
+bool DeckEngine::seekRelativeSeconds (double d)
 {
     Command c { CommandType::SeekRelativeSeconds };
     c.value = d;
     return push (c);
 }
 
-bool Deck::setBeatGrid (double newBpm, double firstBeatSeconds)
+bool DeckEngine::setBeatGrid (double newBpm, double firstBeatSeconds)
 {
     Command c { CommandType::SetBeatGrid };
     c.value = juce::jmax (0.0, newBpm);
@@ -151,35 +157,34 @@ bool Deck::setBeatGrid (double newBpm, double firstBeatSeconds)
     return push (c);
 }
 
-void Deck::setPitchRange (double fraction)
+void DeckEngine::setPitchRange (double fraction)
 {
     fraction = juce::jlimit (0.01, 1.0, fraction);
     pitchRange.store (fraction);
     baseSpeed.store (juce::jlimit (config::minSpeed, config::maxSpeed, 1.0 + pitchFader.load() * fraction));
 }
 
-void Deck::setPitchFader (double position)
+void DeckEngine::setPitchFader (double position)
 {
     position = juce::jlimit (-1.0, 1.0, position);
     pitchFader.store (position);
     baseSpeed.store (juce::jlimit (config::minSpeed, config::maxSpeed, 1.0 + position * pitchRange.load()));
 }
 
-void Deck::setTempoRatio (double ratio)
+void DeckEngine::setTempoRatio (double ratio)
 {
     ratio = juce::jlimit (config::minSpeed, config::maxSpeed, ratio);
     baseSpeed.store (ratio);
     pitchFader.store (juce::jlimit (-1.0, 1.0, (ratio - 1.0) / pitchRange.load()));
 }
 
-void Deck::setPitchBend (double offset)          { pitchBend.store (juce::jlimit (-1.0, 1.0, offset)); }
-void Deck::setKeyLock (bool enabled)             { keyLock.store (enabled); }
-void Deck::setKeyShiftSemitones (double s)       { keyShift.store (juce::jlimit (-config::maxPitchSemitones, config::maxPitchSemitones, s)); }
-void Deck::setTrimDb (float db)                  { trimDb.store (juce::jlimit (config::minTrimDb, config::maxTrimDb, db)); }
+void DeckEngine::setPitchBend (double offset)          { pitchBend.store (juce::jlimit (-1.0, 1.0, offset)); }
+void DeckEngine::setKeyLock (bool enabled)             { keyLock.store (enabled); }
+void DeckEngine::setKeyShiftSemitones (double s)       { keyShift.store (juce::jlimit (-config::maxPitchSemitones, config::maxPitchSemitones, s)); }
 
-Deck::State Deck::getState() const
+DeckState DeckEngine::getState() const
 {
-    State s;
+    DeckState s;
     s.loaded         = pubLoaded.load();
     s.playing        = pubPlaying.load();
     s.cuePreviewing  = pubPreviewing.load();
@@ -231,7 +236,7 @@ Deck::State Deck::getState() const
     return s;
 }
 
-void Deck::collectGarbage()
+void DeckEngine::collectGarbage()
 {
     LoadedTrack* t = nullptr;
     while (retiredTracks.pop (t))
@@ -242,7 +247,7 @@ void Deck::collectGarbage()
 // Audio side
 //==============================================================================
 
-void Deck::prepare (double sampleRate)
+void DeckEngine::prepare (double sampleRate)
 {
     deviceRate = sampleRate;
     fadeLength = juce::jlimit (32, config::maxInternalBlock, (int) std::round (sampleRate * config::declickSeconds));
@@ -271,11 +276,9 @@ void Deck::prepare (double sampleRate)
 
     speedSmoothed.reset (sampleRate, config::speedSmoothingSeconds);
     speedSmoothed.setCurrentAndTargetValue (computeTargetSpeed (true));
-    trimSmoothed.reset (sampleRate, config::gainSmoothingSeconds);
-    trimSmoothed.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (trimDb.load()));
 }
 
-void Deck::pullCommands (int64_t now)
+void DeckEngine::pullCommands (int64_t now)
 {
     Command c;
     while (commandQueue.pop (c))
@@ -302,7 +305,7 @@ void Deck::pullCommands (int64_t now)
     }
 }
 
-void Deck::applyDueCommands (int64_t now)
+void DeckEngine::applyDueCommands (int64_t now)
 {
     int consumed = 0;
     while (consumed < numScheduled && scheduled[consumed].time <= now)
@@ -316,19 +319,19 @@ void Deck::applyDueCommands (int64_t now)
     }
 }
 
-int64_t Deck::getNextCommandTime() const noexcept
+int64_t DeckEngine::getNextCommandTime() const noexcept
 {
     return numScheduled > 0 ? scheduled[0].time : std::numeric_limits<int64_t>::max();
 }
 
-double Deck::clampPosition (double p) const noexcept
+double DeckEngine::clampPosition (double p) const noexcept
 {
     if (track == nullptr)
         return 0.0;
     return juce::jlimit (0.0, (double) track->getLength(), p);
 }
 
-void Deck::retire (LoadedTrack* t)
+void DeckEngine::retire (LoadedTrack* t)
 {
     if (t == nullptr)
         return;
@@ -339,7 +342,7 @@ void Deck::retire (LoadedTrack* t)
         jassertfalse;
 }
 
-void Deck::apply (const Command& c)
+void DeckEngine::apply (const Command& c)
 {
     const double trackRate = track != nullptr ? track->getSampleRate() : 1.0;
 
@@ -475,7 +478,7 @@ void Deck::apply (const Command& c)
     }
 }
 
-void Deck::playAudio() noexcept
+void DeckEngine::playAudio() noexcept
 {
     if (track == nullptr)
         return;
@@ -496,7 +499,7 @@ void Deck::playAudio() noexcept
     stretcherPrimed = false;
 }
 
-void Deck::seekAudio (double target) noexcept
+void DeckEngine::seekAudio (double target) noexcept
 {
     if (track == nullptr)
         return;
@@ -511,7 +514,7 @@ void Deck::seekAudio (double target) noexcept
     stretcherPrimed = false;
 }
 
-double Deck::computeTargetSpeed (bool includeBend) const noexcept
+double DeckEngine::computeTargetSpeed (bool includeBend) const noexcept
 {
     double s = syncSpeed > 0.0 ? syncSpeed : baseSpeed.load (std::memory_order_relaxed);
     if (includeBend)
@@ -519,20 +522,20 @@ double Deck::computeTargetSpeed (bool includeBend) const noexcept
     return juce::jlimit (config::minSpeed, config::maxSpeed, s);
 }
 
-double Deck::getTargetSpeedAudio (bool includeBend) const noexcept { return computeTargetSpeed (includeBend); }
-bool   Deck::hasBeatGridAudio() const noexcept                     { return track != nullptr && bpm > 0.0; }
+double DeckEngine::getTargetSpeedAudio (bool includeBend) const noexcept { return computeTargetSpeed (includeBend); }
+bool   DeckEngine::hasBeatGridAudio() const noexcept                     { return track != nullptr && bpm > 0.0; }
 
-double Deck::getTargetBpmAudio (bool includeBend) const noexcept
+double DeckEngine::getTargetBpmAudio (bool includeBend) const noexcept
 {
     return bpm * computeTargetSpeed (includeBend);
 }
 
-double Deck::getBeatLengthSamplesAudio() const noexcept
+double DeckEngine::getBeatLengthSamplesAudio() const noexcept
 {
     return (track != nullptr && bpm > 0.0) ? track->getSampleRate() * 60.0 / bpm : 0.0;
 }
 
-double Deck::getBeatPhaseAudio() const noexcept
+double DeckEngine::getBeatPhaseAudio() const noexcept
 {
     if (! hasBeatGridAudio())
         return 0.0;
@@ -540,12 +543,12 @@ double Deck::getBeatPhaseAudio() const noexcept
     return beats - std::floor (beats);
 }
 
-void Deck::setSyncSpeedAudio (double s) noexcept
+void DeckEngine::setSyncSpeedAudio (double s) noexcept
 {
     syncSpeed = s > 0.0 ? juce::jlimit (config::minSpeed, config::maxSpeed, s) : 0.0;
 }
 
-void Deck::applyTempoFromSyncAudio (double s) noexcept
+void DeckEngine::applyTempoFromSyncAudio (double s) noexcept
 {
     s = juce::jlimit (config::minSpeed, config::maxSpeed, s);
     baseSpeed.store (s);
@@ -553,7 +556,7 @@ void Deck::applyTempoFromSyncAudio (double s) noexcept
     snapSpeed = true;   // jump straight to the new tempo so the phase alignment holds exactly
 }
 
-StereoSource Deck::sourceView() const noexcept
+StereoSource DeckEngine::sourceView() const noexcept
 {
     StereoSource src;
     if (track != nullptr)
@@ -567,7 +570,7 @@ StereoSource Deck::sourceView() const noexcept
 
 //==============================================================================
 
-void Deck::render (float* left, float* right, int numSamples)
+void DeckEngine::render (float* left, float* right, int numSamples)
 {
     jassert (numSamples <= config::maxInternalBlock);
 
@@ -612,7 +615,7 @@ void Deck::render (float* left, float* right, int numSamples)
     publishState();
 }
 
-void Deck::publishState() noexcept
+void DeckEngine::publishState() noexcept
 {
     pubPos.store (pos, std::memory_order_relaxed);
     pubCue.store (cuePos, std::memory_order_relaxed);
@@ -630,7 +633,7 @@ void Deck::publishState() noexcept
     pubGeneration.store (loadedGeneration, std::memory_order_release);
 }
 
-void Deck::renderInternal (float* left, float* right, int numSamples)
+void DeckEngine::renderInternal (float* left, float* right, int numSamples)
 {
     // Speed smoothing runs even while paused so a tempo change made while stopped is
     // already in place on the next play.
@@ -647,27 +650,6 @@ void Deck::renderInternal (float* left, float* right, int numSamples)
     {
         speedSmoothed.skip (numSamples);
         zero (left, right, numSamples);
-    }
-
-    // Trim gain.
-    trimSmoothed.setTargetValue (juce::Decibels::decibelsToGain (trimDb.load (std::memory_order_relaxed), -100.0f));
-    if (trimSmoothed.isSmoothing())
-    {
-        for (int i = 0; i < numSamples; ++i)
-        {
-            const float g = trimSmoothed.getNextValue();
-            left[i] *= g;
-            right[i] *= g;
-        }
-    }
-    else
-    {
-        const float g = trimSmoothed.getTargetValue();
-        if (std::abs (g - 1.0f) > 1.0e-7f)
-        {
-            juce::FloatVectorOperations::multiply (left, g, numSamples);
-            juce::FloatVectorOperations::multiply (right, g, numSamples);
-        }
     }
 
     // De-click crossfade: fade the new signal in under the (already faded-out) tail.
@@ -688,7 +670,7 @@ void Deck::renderInternal (float* left, float* right, int numSamples)
     }
 }
 
-void Deck::captureTail (FadeShape shape)
+void DeckEngine::captureTail (FadeShape shape)
 {
     // Render what *would* have been heard next (including any fade already in progress),
     // fade it out, and keep it to overlap the new signal. This advances the playback state,
@@ -707,7 +689,7 @@ void Deck::captureTail (FadeShape shape)
     tailShape = shape;
 }
 
-void Deck::renderPlaying (float* left, float* right, int numSamples)
+void DeckEngine::renderPlaying (float* left, float* right, int numSamples)
 {
     if (path == Path::Vinyl)
         renderVinyl (left, right, numSamples);
@@ -715,7 +697,7 @@ void Deck::renderPlaying (float* left, float* right, int numSamples)
         renderKeyLock (left, right, numSamples);
 }
 
-void Deck::renderVinyl (float* left, float* right, int numSamples)
+void DeckEngine::renderVinyl (float* left, float* right, int numSamples)
 {
     const double srRatio = track->getSampleRate() / deviceRate;
     float maxInc = 0.0f;
@@ -732,7 +714,7 @@ void Deck::renderVinyl (float* left, float* right, int numSamples)
                           interpolator.chooseKernel (maxInc));
 }
 
-void Deck::primeStretcher()
+void DeckEngine::primeStretcher()
 {
     const double srRatio = track->getSampleRate() / deviceRate;
     const double rate = juce::jmax (config::minStretchRate, speedSmoothed.getCurrentValue()) * srRatio;
@@ -748,7 +730,7 @@ void Deck::primeStretcher()
     stretcherPrimed = true;
 }
 
-void Deck::renderKeyLock (float* left, float* right, int numSamples)
+void DeckEngine::renderKeyLock (float* left, float* right, int numSamples)
 {
     if (! stretcherPrimed)
         primeStretcher();

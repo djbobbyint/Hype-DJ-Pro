@@ -8,15 +8,15 @@ namespace hype::ui
 /**
     One deck: track info, large BPM, times, overview waveform, jog wheel, pitch fader with range
     and bend, key lock, CUE / PLAY / SYNC. Every control talks to the engine directly through the
-    thread-safe Deck / AudioEngine API; the display is refreshed from Deck::State by update().
+    thread-safe Deck / AudioEngine API; the display is refreshed from DeckState by update().
 */
 class DeckComponent : public juce::Component,
                       public juce::FileDragAndDropTarget
 {
 public:
-    DeckComponent (AudioEngine&, int deckIndex);
+    DeckComponent (EngineInterface&, int deckIndex);
 
-    void update (const Deck::State&, const LoadedTrack::Ptr& track);
+    void update (const DeckState&, std::shared_ptr<const WaveformData> waveform);
 
     /** Shows a transient message in the deck header (errors, hints). */
     void showMessage (const juce::String& text, juce::Colour colour = Palette::danger);
@@ -38,10 +38,10 @@ private:
     void cyclePitchRange();
     juce::Rectangle<int> infoArea, timeArea, headerArea;
 
-    AudioEngine& engine;
+    EngineInterface& engine;
     const int deck;
     const juce::Colour accent;
-    Deck::State state;
+    DeckState state;
 
     OverviewWaveform overview;
     JogWheel jog;

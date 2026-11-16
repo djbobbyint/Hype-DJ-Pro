@@ -7,32 +7,32 @@ namespace
     constexpr int rowHeight = 30;
     constexpr int labelWidth = 150;
 
-    juce::Colour stateColour (AudioDeviceController::State s)
+    juce::Colour stateColour (DeviceState s)
     {
         switch (s)
         {
-            case AudioDeviceController::State::running:    return Palette::play;
-            case AudioDeviceController::State::fallback:   return Palette::cue;
-            case AudioDeviceController::State::recovering: return Palette::cue;
-            case AudioDeviceController::State::noDevice:   return Palette::danger;
+            case DeviceState::running:    return Palette::play;
+            case DeviceState::fallback:   return Palette::cue;
+            case DeviceState::recovering: return Palette::cue;
+            case DeviceState::noDevice:   return Palette::danger;
         }
         return Palette::danger;
     }
 
-    juce::String stateText (AudioDeviceController::State s)
+    juce::String stateText (DeviceState s)
     {
         switch (s)
         {
-            case AudioDeviceController::State::running:    return "CONNECTED";
-            case AudioDeviceController::State::fallback:   return "FALLBACK DEVICE";
-            case AudioDeviceController::State::recovering: return "RECONNECTING";
-            case AudioDeviceController::State::noDevice:   return "NO DEVICE";
+            case DeviceState::running:    return "CONNECTED";
+            case DeviceState::fallback:   return "FALLBACK DEVICE";
+            case DeviceState::recovering: return "RECONNECTING";
+            case DeviceState::noDevice:   return "NO DEVICE";
         }
         return {};
     }
 }
 
-AudioSettingsComponent::AudioSettingsComponent (AudioDeviceController& c) : controller (c)
+AudioSettingsComponent::AudioSettingsComponent (DeviceControl& c) : controller (c)
 {
     for (auto* box : { &typeBox, &deviceBox, &rateBox, &bufferBox, &masterBox, &phonesBox })
         addAndMakeVisible (*box);
@@ -92,7 +92,7 @@ AudioSettingsComponent::AudioSettingsComponent (AudioDeviceController& c) : cont
     refresh();
 }
 
-void AudioSettingsComponent::applyChange (const std::function<void (AudioDeviceController::Settings&)>& change)
+void AudioSettingsComponent::applyChange (const std::function<void (DeviceSettings&)>& change)
 {
     auto s = controller.getSettings();
     if (auto st = controller.getStatus(); s.typeName.isEmpty())
@@ -220,7 +220,7 @@ void AudioSettingsComponent::paint (juce::Graphics& g)
 
     if (st.message.isNotEmpty())
     {
-        g.setColour (st.state == AudioDeviceController::State::running ? Palette::textDim : Palette::cue);
+        g.setColour (st.state == DeviceState::running ? Palette::textDim : Palette::cue);
         g.drawText (st.message, card.removeFromTop (20), juce::Justification::centredLeft, true);
     }
 

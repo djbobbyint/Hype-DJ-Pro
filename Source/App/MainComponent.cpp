@@ -4,14 +4,14 @@ namespace hype::ui
 {
 namespace
 {
-    juce::Colour statusColour (AudioDeviceController::State s)
+    juce::Colour statusColour (DeviceState s)
     {
         switch (s)
         {
-            case AudioDeviceController::State::running:    return Palette::play;
-            case AudioDeviceController::State::fallback:
-            case AudioDeviceController::State::recovering: return Palette::cue;
-            case AudioDeviceController::State::noDevice:   return Palette::danger;
+            case DeviceState::running:    return Palette::play;
+            case DeviceState::fallback:
+            case DeviceState::recovering: return Palette::cue;
+            case DeviceState::noDevice:   return Palette::danger;
         }
         return Palette::danger;
     }
@@ -47,15 +47,15 @@ MainComponent::MainComponent()
     settingsButton.onClick = [this] { openAudioSettings(); };
     addAndMakeVisible (settingsButton);
 
-    deviceController.onStatusChanged = [this]
+    deviceController.setStatusListener ([this]
     {
         deviceStatus = deviceController.getStatus();
         if (settingsComponent != nullptr)
             settingsComponent->refresh();
         repaint (topBar);
-    };
+    });
 
-    engine.setSilentClockEnabled (true);   // keep the decks running even without an output device
+    engine.setRunWithoutOutput (true);   // keep the decks running even without an output device
     restoreSettings();
     deviceStatus = deviceController.getStatus();
 
@@ -68,7 +68,7 @@ MainComponent::~MainComponent()
     stopTimer();
     saveSettings();
     selfTest.reset();
-    deviceController.onStatusChanged = nullptr;
+    deviceController.setStatusListener (nullptr);
     if (settingsWindow != nullptr)
         delete settingsWindow.getComponent();
 }
@@ -94,14 +94,14 @@ void MainComponent::saveSettings()
 
 std::unique_ptr<juce::XmlElement> MainComponent::createMixerXml() const
 {
-    const auto& m = engine.getMixer();
+    const auto& m = engine.mixer();
     auto xml = std::make_unique<juce::XmlElement> ("HYPE_MIXER");
     xml->setAttribute ("crossfader", m.getCrossfader());
     xml->setAttribute ("curve", m.getCrossfaderCurveShape());
     xml->setAttribute ("reverse", m.isCrossfaderReversed());
-    xml->setAttribute ("master", m.getMasterGain());
-    xml->setAttribute ("cueMix", m.getCueMix());
-    xml->setAttribute ("cueGain", m.getCueGain());
+    xml->setAttribute ("master", m.getMasterVolume());
+    xml->setAttribute ("cueMix", engine.cue().getCueMix());
+    xml->setAttribute ("cueGain", engine.cue().getCueLevel());
     return xml;
 }
 
@@ -109,13 +109,13 @@ void MainComponent::restoreMixerXml (const juce::XmlElement* xml)
 {
     if (xml == nullptr || ! xml->hasTagName ("HYPE_MIXER"))
         return;
-    auto& m = engine.getMixer();
+    auto& m = engine.mixer();
     m.setCrossfader ((float) xml->getDoubleAttribute ("crossfader", 0.5));
     m.setCrossfaderCurveShape ((float) xml->getDoubleAttribute ("curve", 0.0));
     m.setCrossfaderReverse (xml->getBoolAttribute ("reverse", false));
-    m.setMasterGain ((float) xml->getDoubleAttribute ("master", 1.0));
-    m.setCueMix ((float) xml->getDoubleAttribute ("cueMix", 0.0));
-    m.setCueGain ((float) xml->getDoubleAttribute ("cueGain", 1.0));
+    m.setMasterVolume ((float) xml->getDoubleAttribute ("master", 1.0));
+    engine.cue().setCueMix ((float) xml->getDoubleAttribute ("cueMix", 0.0));
+    engine.cue().setCueLevel ((float) xml->getDoubleAttribute ("cueGain", 1.0));
 }
 
 //==============================================================================
@@ -148,13 +148,13 @@ void MainComponent::timerCallback()
 
     for (int d = 0; d < 2; ++d)
     {
-        auto& dk = engine.getDeck (d);
+        auto& dk = engine.deck (d);
         const auto state = dk.getState();
-        const auto track = dk.getDisplayTrack();
-        (d == 0 ? waveA : waveB).update (state, track);
-        (d == 0 ? deckA : deckB).update (state, track);
+        const auto waveform = dk.getWaveform();
+        (d == 0 ? waveA : waveB).update (state, waveform);
+        (d == 0 ? deckA : deckB).update (state, waveform);
     }
-    mixer->update (engine.getMixer().getAndResetMeters());
+    mixer->update (engine.mixer().getAndResetMeters(), engine.cue().getAndResetMeters());
 
     if (frame % 15 == 0)   // device status / CPU 4x per second
     {
@@ -180,31 +180,27 @@ void MainComponent::handleCommandLine (const juce::StringArray& args)
     auto value = [&args] (const juce::String& key) { const int i = args.indexOf (key); return i >= 0 ? args[i + 1].unquoted() : juce::String(); };
     const auto cwd = juce::File::getCurrentWorkingDirectory();
 
-    for (int d = 0; d < 2; ++d)
-        if (auto f = value (d == 0 ? "--load-a" : "--load-b"); f.isNotEmpty())
-            engine.loadTrackSync (d, cwd.getChildFile (f));
+    playAfterLoads = args.contains ("--play");
+    startSelfTestAfterLoads = args.contains ("--selftest");
 
-    if (args.contains ("--play"))
+    for (int d = 0; d < 2; ++d)
     {
-        juce::Timer::callAfterDelay (300, [this]
+        const auto f = value (d == 0 ? "--load-a" : "--load-b");
+        if (f.isEmpty())
+            continue;
+        ++pendingLoads;
+        juce::Component::SafePointer<MainComponent> safe (this);
+        engine.loadTrack (d, cwd.getChildFile (f), [safe] (int, const LoadResult&)
         {
-            engine.getDeck (0).seekToSeconds (20.0);
-            engine.getDeck (0).play();
-            engine.getDeck (1).seekToSeconds (5.0);
-            engine.getDeck (1).setKeyLock (true);
-            engine.getMixer().setCueEnabled (1, true);
-            engine.getMixer().setCrossfader (0.35f);
-            engine.syncDeck (1, 0, true);
-            engine.setSyncLock (1, 0);
-            engine.getDeck (1).play();
+            juce::MessageManager::callAsync ([safe]
+            {
+                if (safe != nullptr && --safe->pendingLoads == 0)
+                    juce::Timer::callAfterDelay (200, [safe] { if (safe != nullptr) safe->onCommandLineLoadsFinished(); });
+            });
         });
     }
-
-    if (args.contains ("--selftest"))
-    {
-        selfTest = std::make_unique<UiSelfTest> (*this, engine);
-        juce::Timer::callAfterDelay (500, [this] { selfTest->start(); });
-    }
+    if (pendingLoads == 0)
+        juce::Timer::callAfterDelay (200, [this] { onCommandLineLoadsFinished(); });
 
     if (args.contains ("--settings"))
         juce::Timer::callAfterDelay (200, [this] { openAudioSettings(); });
@@ -212,7 +208,29 @@ void MainComponent::handleCommandLine (const juce::StringArray& args)
     if (auto shot = value ("--screenshot"); shot.isNotEmpty())
     {
         screenshotFile = cwd.getChildFile (shot);
-        screenshotAtFrame = 150;   // ~2.5 s
+        screenshotAtFrame = 180;   // ~3 s
+    }
+}
+
+void MainComponent::onCommandLineLoadsFinished()
+{
+    if (playAfterLoads)
+    {
+        engine.deck (0).seekToSeconds (20.0);
+        engine.deck (0).play();
+        engine.deck (1).seekToSeconds (5.0);
+        engine.deck (1).setKeyLock (true);
+        engine.cue().setCueEnabled (1, true);
+        engine.mixer().setCrossfader (0.35f);
+        engine.syncDeck (1, 0, true);
+        engine.setSyncLock (1, 0);
+        engine.deck (1).play();
+    }
+
+    if (startSelfTestAfterLoads)
+    {
+        selfTest = std::make_unique<UiSelfTest> (*this, engine);
+        selfTest->start();
     }
 }
 
@@ -245,14 +263,14 @@ void MainComponent::paint (juce::Graphics& g)
     p.removeFromLeft (10);
 
     juce::String text;
-    if (st.state == AudioDeviceController::State::running || st.state == AudioDeviceController::State::fallback)
+    if (st.state == DeviceState::running || st.state == DeviceState::fallback)
         text << st.deviceName << "   " << juce::String (st.sampleRate / 1000.0, 1) << " kHz   "
              << st.bufferSize << " smp   " << juce::String (st.latencyMs, 1) << " ms   CPU "
              << juce::roundToInt (st.cpuLoad * 100.0) << "%"
-             << (st.state == AudioDeviceController::State::fallback ? "   (fallback)" : "");
+             << (st.state == DeviceState::fallback ? "   (fallback)" : "");
     else
         text << (st.message.isNotEmpty() ? st.message : juce::String ("No audio device - open Audio Settings"))
-             << (engine.isRunningOnSilentClock() ? "   (engine running without output)" : "");
+             << (st.engineRunningWithoutOutput ? "   (engine running without output)" : "");
 
     g.setColour (Palette::text);
     g.setFont (HypeLookAndFeel::font (14.0f));

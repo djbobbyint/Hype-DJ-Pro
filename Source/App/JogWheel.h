@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/AudioEngine.h"
+#include "Api/HypeEngineApi.h"
 #include "Widgets.h"
 
 namespace hype::ui
@@ -14,9 +14,9 @@ namespace hype::ui
 class JogWheel : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
 {
 public:
-    JogWheel (AudioEngine&, int deckIndex);
+    JogWheel (EngineInterface&, int deckIndex);
 
-    void update (const Deck::State&);
+    void update (const DeckState&);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -30,9 +30,9 @@ private:
     void turn (double deltaRadians);
     float angleOf (juce::Point<float>) const;
 
-    AudioEngine& engine;
+    EngineInterface& engine;
     const int deck;
-    Deck::State state;
+    DeckState state;
     float lastAngle = 0.0f;
     bool touching = false;
     bool bending = false;

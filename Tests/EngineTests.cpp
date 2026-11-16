@@ -4,7 +4,7 @@
 
 #include "AllocationTracker.h"
 #include "Engine/AudioEngine.h"
-#include "Engine/AudioDeviceController.h"
+#include "Engine/AudioEngine.h"
 #include "Engine/BeatAnalyzer.h"
 #include "FakeAudioDevice.h"
 
@@ -69,7 +69,7 @@ struct Host
         engine.prepareToPlay (deviceRate, blockSize);
         // Unity routing by default for measurements.
         for (int d = 0; d < 2; ++d)
-            engine.getMixer().setCrossfaderAssign (d, Mixer::CrossfaderAssign::Thru);
+            engine.getMixer().setCrossfaderAssign (d, CrossfaderAssign::Thru);
         engine.getMixer().setLimiterEnabled (false);
     }
 
@@ -102,7 +102,7 @@ struct Host
     /** Lets queued commands reach the audio thread. */
     void tick() { render (0.001); }
 
-    Deck& deck (int i) { return engine.getDeck (i); }
+    DeckEngine& deck (int i) { return engine.getDeck (i); }
 };
 
 /** Frequency from positive-going zero crossings (sub-sample accurate). */
@@ -462,8 +462,8 @@ public:
             d.setPitchBend (0.08);         append (0.2);
             d.setPitchBend (0.0);          append (0.2);
             d.returnToCue();               append (0.3);
-            d.setTrimDb (-12.0f);          append (0.2);
-            d.setTrimDb (0.0f);            append (0.2);
+            h.engine.getMixer().setChannelGainDb (0, -12.0f);          append (0.2);
+            h.engine.getMixer().setChannelGainDb (0, 0.0f);          append (0.2);
             d.cueDown();                   append (0.2);   // playing -> back to cue, pause
             d.cueUp();
             d.cueDown();                   append (0.3);   // preview
@@ -477,7 +477,7 @@ public:
         beginTest ("Crossfader and fader moves are smoothed");
         {
             Host h;
-            h.engine.getMixer().setCrossfaderAssign (0, Mixer::CrossfaderAssign::A);
+            h.engine.getMixer().setCrossfaderAssign (0, CrossfaderAssign::A);
             h.deck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0), 48000.0));
             h.deck (0).play();
             auto a = h.render (0.2);
@@ -506,11 +506,10 @@ public:
         beginTest ("Two decks play independently and simultaneously");
         {
             Host h;
-            auto& mixer = h.engine.getMixer();
             h.deck (0).loadTrack (makeTrack (sine (440.0, 30.0, 44100.0), 44100.0));
             h.deck (1).loadTrack (makeTrack (sine (660.0, 30.0, 48000.0), 48000.0));
-            mixer.setDirectOutput (0, 4, 5);
-            mixer.setDirectOutput (1, 6, 7);
+            h.engine.getRouter().setDirectOutput (0, 4, 5);
+            h.engine.getRouter().setDirectOutput (1, 6, 7);
 
             h.deck (0).setTempoRatio (1.05);
             h.deck (1).setKeyLock (true);
@@ -544,15 +543,15 @@ public:
 
             mixer.setChannelVolume (0, 0.5f);
             auto out = h.render (0.5);
-            expectWithinAbsoluteError (peak (out, 0, 0.1, 0.5), 0.5f * Mixer::faderToGain (0.5f), 0.005f);
+            expectWithinAbsoluteError (peak (out, 0, 0.1, 0.5), 0.5f * MixerEngine::faderToGain (0.5f), 0.005f);
 
             mixer.setChannelVolume (0, 1.0f);
-            h.deck (0).setTrimDb (-6.0f);
+            mixer.setChannelGainDb (0, -6.0f);
             out = h.render (0.5);
             expectWithinAbsoluteError (peak (out, 0, 0.1, 0.5), 0.5f * juce::Decibels::decibelsToGain (-6.0f), 0.005f);
 
-            h.deck (0).setTrimDb (0.0f);
-            mixer.setCrossfaderAssign (0, Mixer::CrossfaderAssign::A);
+            mixer.setChannelGainDb (0, 0.0f);
+            mixer.setCrossfaderAssign (0, CrossfaderAssign::A);
             mixer.setCrossfader (0.5f);
             out = h.render (0.5);
             expectWithinAbsoluteError (peak (out, 0, 0.1, 0.5), 0.5f * std::cos (juce::MathConstants<float>::pi / 4), 0.005f);
@@ -561,11 +560,11 @@ public:
             expectWithinAbsoluteError (peak (out, 0, 0.1, 0.5), 0.5f, 0.005f);
 
             float a, b;
-            Mixer::crossfaderGains (0.5f, Mixer::CrossfaderCurve::Linear, a, b);
+            MixerEngine::crossfaderGains (0.5f, CrossfaderCurve::Linear, a, b);
             expectEquals (a, 1.0f); expectEquals (b, 1.0f);
-            Mixer::crossfaderGains (0.1f, Mixer::CrossfaderCurve::Cut, a, b);
+            MixerEngine::crossfaderGains (0.1f, CrossfaderCurve::Cut, a, b);
             expectEquals (a, 1.0f); expectEquals (b, 1.0f);
-            Mixer::crossfaderGains (0.0f, Mixer::CrossfaderCurve::Cut, a, b);
+            MixerEngine::crossfaderGains (0.0f, CrossfaderCurve::Cut, a, b);
             expectEquals (b, 0.0f);
         }
 
@@ -576,7 +575,7 @@ public:
             h.deck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0), 48000.0));
             h.deck (1).loadTrack (makeTrack (sine (660.0, 10.0, 48000.0), 48000.0));
             mixer.setChannelVolume (1, 0.0f);   // B is pre-listened only
-            mixer.setCueEnabled (1, true);
+            h.engine.getCue().setCueEnabled (1, true);
             h.deck (0).play();
             h.deck (1).play();
             h.render (0.1);
@@ -584,12 +583,12 @@ public:
             expectWithinAbsoluteError (measureFrequency (out, 0, 0.1, 1.0), 440.0, 0.2);   // master = A
             expectWithinAbsoluteError (measureFrequency (out, 2, 0.1, 1.0), 660.0, 0.2);   // cue = B
 
-            mixer.setCueMix (1.0f);  // headphones hear master only
+            h.engine.getCue().setCueMix (1.0f);  // headphones hear master only
             h.render (0.1);
             out = h.render (1.0);
             expectWithinAbsoluteError (measureFrequency (out, 2, 0.1, 1.0), 440.0, 0.2);
 
-            mixer.setCueOutput (-1, -1);
+            h.engine.getRouter().setCueOutput (-1, -1);
             out = h.render (0.5);
             expectLessThan (peak (out, 2, 0.0, 0.5), 1e-9f);
         }
@@ -598,11 +597,11 @@ public:
         {
             Host h;
             h.engine.getMixer().setLimiterEnabled (true);
-            h.engine.getMixer().setMasterGain (2.0f);
+            h.engine.getMixer().setMasterVolume (2.0f);
             for (int d = 0; d < 2; ++d)
             {
                 h.deck (d).loadTrack (makeTrack (sine (440.0, 5.0, 48000.0, 0.9f), 48000.0));
-                h.deck (d).setTrimDb (6.0f);
+                h.engine.getMixer().setChannelGainDb (d, 6.0f);
                 h.deck (d).play();
             }
             auto out = h.render (1.0);
@@ -693,8 +692,8 @@ public:
             Host h;
             h.deck (0).loadTrack (makeTrack (clickTrack (126.0, 60.0, 48000.0), 48000.0, 126.0, 0.0));
             h.deck (1).loadTrack (makeTrack (clickTrack (122.0, 60.0, 44100.0, 0.2), 44100.0, 122.0, 0.2));
-            h.engine.getMixer().setDirectOutput (0, 4, 5);
-            h.engine.getMixer().setDirectOutput (1, 6, 7);
+            h.engine.getRouter().setDirectOutput (0, 4, 5);
+            h.engine.getRouter().setDirectOutput (1, 6, 7);
             h.deck (0).play();
             h.render (1.3);
             h.deck (1).seekToSeconds (3.31);
@@ -744,7 +743,7 @@ public:
                                            h.render (0.3, true);
             b.play(); b.eject();           h.render (0.3, true);
             h.engine.getMixer().setCrossfader (0.1f);
-            h.engine.getMixer().setCueEnabled (0, true);
+            h.engine.getCue().setCueEnabled (0, true);
                                            h.render (0.3, true);
             expectEquals ((int) alloctrack::allocations.load(), 0);
         }
@@ -872,8 +871,8 @@ public:
             Host h;
             auto a = files[0], b = files[1];
             std::atomic<int> done { 0 };
-            h.engine.loadTrackAsync (0, a, [&] (int, const AudioFileDecoder::Result&) { ++done; });
-            h.engine.loadTrackAsync (0, b, [&] (int, const AudioFileDecoder::Result&) { ++done; });
+            h.engine.loadTrack (0, a, [&] (int, const LoadResult&) { ++done; });
+            h.engine.loadTrack (0, b, [&] (int, const LoadResult&) { ++done; });
             for (int i = 0; i < 500 && done.load() < 2; ++i)
                 juce::Thread::sleep (10);
             expectEquals (done.load(), 2);
@@ -924,10 +923,10 @@ public:
     {
         Host h;
         auto& mixer = h.engine.getMixer();
-        mixer.setEqGainDb (0, ThreeBandEq::low, lowDb);
-        mixer.setEqGainDb (0, ThreeBandEq::mid, midDb);
-        mixer.setEqGainDb (0, ThreeBandEq::high, highDb);
-        mixer.setEqKill (0, ThreeBandEq::mid, killMid);
+        mixer.setEqGainDb (0, EqBand::low, lowDb);
+        mixer.setEqGainDb (0, EqBand::mid, midDb);
+        mixer.setEqGainDb (0, EqBand::high, highDb);
+        mixer.setEqKill (0, EqBand::mid, killMid);
         h.deck (0).loadTrack (makeTrack (sine (freq, 3.0, 48000.0, 0.25f), 48000.0));
         h.deck (0).play();
         auto out = h.render (1.0);
@@ -960,8 +959,8 @@ public:
             float worst = 0.0f;
             for (int i = 0; i < 6; ++i)
             {
-                mixer.setEqKill (0, ThreeBandEq::low, i % 2 == 0);
-                mixer.setEqGainDb (0, ThreeBandEq::low, i % 3 == 0 ? 6.0f : -10.0f);
+                mixer.setEqKill (0, EqBand::low, i % 2 == 0);
+                mixer.setEqGainDb (0, EqBand::low, i % 3 == 0 ? 6.0f : -10.0f);
                 worst = juce::jmax (worst, maxStep (h.render (0.1), 0));
             }
             expectLessThan (worst, 0.02f);   // 90 Hz @ 0.5 has a natural step of ~0.006
@@ -971,15 +970,15 @@ public:
         for (float shape : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
         {
             float a, b;
-            Mixer::crossfaderGains (0.0f, shape, false, a, b);
+            MixerEngine::crossfaderGains (0.0f, shape, false, a, b);
             expectEquals (a, 1.0f); expectWithinAbsoluteError (b, 0.0f, 1e-6f);
-            Mixer::crossfaderGains (1.0f, shape, false, a, b);
+            MixerEngine::crossfaderGains (1.0f, shape, false, a, b);
             expectWithinAbsoluteError (a, 0.0f, 1e-6f); expectEquals (b, 1.0f);
 
             float prevA = 2.0f, prevB = -1.0f;
             for (float p = 0.0f; p <= 1.0f; p += 0.01f)
             {
-                Mixer::crossfaderGains (p, shape, false, a, b);
+                MixerEngine::crossfaderGains (p, shape, false, a, b);
                 expectLessOrEqual (a, prevA + 1e-6f);
                 expectGreaterOrEqual (b, prevB - 1e-6f);
                 prevA = a; prevB = b;
@@ -987,14 +986,14 @@ public:
         }
         {
             float a, b, a2, b2;
-            Mixer::crossfaderGains (0.5f, 0.0f, false, a, b);
+            MixerEngine::crossfaderGains (0.5f, 0.0f, false, a, b);
             expectWithinAbsoluteError (a * a + b * b, 1.0f, 1e-5f);     // constant power
-            Mixer::crossfaderGains (0.5f, 1.0f, false, a, b);
+            MixerEngine::crossfaderGains (0.5f, 1.0f, false, a, b);
             expectEquals (a, 1.0f); expectEquals (b, 1.0f);             // scratch: both full
-            Mixer::crossfaderGains (0.97f, 1.0f, false, a, b);
+            MixerEngine::crossfaderGains (0.97f, 1.0f, false, a, b);
             expectGreaterThan (a, 0.9f);                                // cut-in within last ~3 %
-            Mixer::crossfaderGains (0.2f, 0.4f, false, a, b);
-            Mixer::crossfaderGains (0.2f, 0.4f, true, a2, b2);
+            MixerEngine::crossfaderGains (0.2f, 0.4f, false, a, b);
+            MixerEngine::crossfaderGains (0.2f, 0.4f, true, a2, b2);
             expectEquals (a, b2); expectEquals (b, a2);                 // reverse swaps sides
         }
 
@@ -1002,8 +1001,8 @@ public:
         {
             Host h;
             auto& mixer = h.engine.getMixer();
-            mixer.setCrossfaderAssign (0, Mixer::CrossfaderAssign::A);
-            mixer.setCrossfaderAssign (1, Mixer::CrossfaderAssign::B);
+            mixer.setCrossfaderAssign (0, CrossfaderAssign::A);
+            mixer.setCrossfaderAssign (1, CrossfaderAssign::B);
             h.deck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0, 0.3f), 48000.0));
             h.deck (1).loadTrack (makeTrack (sine (660.0, 10.0, 48000.0, 0.3f), 48000.0));
             h.deck (0).play();
@@ -1029,8 +1028,8 @@ public:
         {
             Host h;
             auto& mixer = h.engine.getMixer();
-            mixer.setCrossfaderAssign (0, Mixer::CrossfaderAssign::A);
-            mixer.setCrossfaderAssign (1, Mixer::CrossfaderAssign::B);
+            mixer.setCrossfaderAssign (0, CrossfaderAssign::A);
+            mixer.setCrossfaderAssign (1, CrossfaderAssign::B);
             mixer.setCrossfader (0.0f);          // audience hears deck A only
             h.deck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0, 0.3f), 48000.0));
             h.deck (1).loadTrack (makeTrack (sine (660.0, 10.0, 48000.0, 0.3f), 48000.0));
@@ -1042,10 +1041,10 @@ public:
             // Re-render identically with deck B cued: master must be bit-identical.
             Host h2;
             auto& mixer2 = h2.engine.getMixer();
-            mixer2.setCrossfaderAssign (0, Mixer::CrossfaderAssign::A);
-            mixer2.setCrossfaderAssign (1, Mixer::CrossfaderAssign::B);
+            mixer2.setCrossfaderAssign (0, CrossfaderAssign::A);
+            mixer2.setCrossfaderAssign (1, CrossfaderAssign::B);
             mixer2.setCrossfader (0.0f);
-            mixer2.setCueEnabled (1, true);
+            h2.engine.getCue().setCueEnabled (1, true);
             h2.deck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0, 0.3f), 48000.0));
             h2.deck (1).loadTrack (makeTrack (sine (660.0, 10.0, 48000.0, 0.3f), 48000.0));
             h2.deck (0).play();
@@ -1069,14 +1068,14 @@ public:
             expectWithinAbsoluteError (toneAmplitude (faderDown, 2, 660.0, 0.0, 0.5), 0.3, 0.005);
 
             // Both decks cued simultaneously.
-            mixer2.setCueEnabled (0, true);
+            h2.engine.getCue().setCueEnabled (0, true);
             h2.render (0.1);
             auto both = h2.render (0.5);
             expectWithinAbsoluteError (toneAmplitude (both, 2, 440.0, 0.0, 0.5), 0.3, 0.005);
             expectWithinAbsoluteError (toneAmplitude (both, 2, 660.0, 0.0, 0.5), 0.3, 0.005);
 
             // Headphone volume.
-            mixer2.setCueGain (0.5f);
+            h2.engine.getCue().setCueLevel (0.5f);
             h2.render (0.1);
             auto quieter = h2.render (0.5);
             expectWithinAbsoluteError (toneAmplitude (quieter, 3, 660.0, 0.0, 0.5), 0.15, 0.005);
@@ -1086,10 +1085,10 @@ public:
         {
             Host h;
             auto& mixer = h.engine.getMixer();
-            mixer.setCrossfaderAssign (1, Mixer::CrossfaderAssign::B);
+            mixer.setCrossfaderAssign (1, CrossfaderAssign::B);
             mixer.setCrossfader (0.0f);
-            mixer.setCueEnabled (1, true);
-            mixer.setSplitCue (true);
+            h.engine.getCue().setCueEnabled (1, true);
+            h.engine.getCue().setSplitCue (true);
             h.deck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0, 0.3f), 48000.0));
             h.deck (1).loadTrack (makeTrack (sine (660.0, 10.0, 48000.0, 0.3f), 48000.0));
             h.deck (0).play();
@@ -1102,7 +1101,7 @@ public:
             expectLessThan (toneAmplitude (out, 3, 660.0, 0.0, 0.5), 1e-4);
 
             // Single stereo device: split signal replaces the master on the shared pair.
-            mixer.setCueOutput (0, 1);
+            h.engine.getRouter().setCueOutput (0, 1);
             h.render (0.1);
             out = h.render (0.5);
             expectWithinAbsoluteError (toneAmplitude (out, 0, 660.0, 0.0, 0.5), 0.3, 0.005);
@@ -1116,7 +1115,7 @@ public:
             auto& mixer = h.engine.getMixer();
             h.deck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0, 0.8f), 48000.0));
             h.deck (0).play();
-            mixer.setMasterGain (0.5f);
+            mixer.setMasterVolume (0.5f);
             h.render (0.1);
             mixer.getAndResetMeters();
             auto out = h.render (0.5);
@@ -1142,22 +1141,22 @@ public:
     {
         AudioEngine engine;
         FakeAudioDeviceType* fake = nullptr;
-        std::unique_ptr<AudioDeviceController> controller;
+        AudioDeviceManager* controller = nullptr;
 
         Rig()
         {
             auto type = std::make_unique<FakeAudioDeviceType>();
             fake = type.get();
-            engine.getDeviceManager().addAudioDeviceType (std::move (type));
-            controller = std::make_unique<AudioDeviceController> (engine);
+            engine.getDevices().getJuceDeviceManager().addAudioDeviceType (std::move (type));
+            controller = &engine.getDevices();
             controller->setWatchdogEnabled (false);
         }
-        ~Rig() { controller->setWatchdogEnabled (false); engine.closeDevice(); }
+        ~Rig() { controller->setWatchdogEnabled (false); controller->closeDevice(); }
 
         FakeAudioDeviceType::Device* device() { return fake->findOpenDevice (currentName()); }
         juce::String currentName()
         {
-            auto* d = engine.getDeviceManager().getCurrentAudioDevice();
+            auto* d = engine.getDevices().getJuceDeviceManager().getCurrentAudioDevice();
             return d != nullptr ? d->getName() : juce::String();
         }
     };
@@ -1171,7 +1170,7 @@ public:
             auto names = rig.controller->getDeviceNames (FakeAudioDeviceType::typeName);
             expect (names.contains ("Fake Interface 8ch") && names.contains ("Fake Laptop 2ch"));
 
-            AudioDeviceController::Settings s;
+            DeviceSettings s;
             s.typeName = FakeAudioDeviceType::typeName;
             s.deviceName = "Fake Interface 8ch";
             s.sampleRate = 96000.0;
@@ -1181,7 +1180,7 @@ public:
             expectEquals (rig.controller->apply (s), juce::String());
 
             auto st = rig.controller->getStatus();
-            expect (st.state == AudioDeviceController::State::running);
+            expect (st.state == DeviceState::running);
             expectEquals (st.deviceName, juce::String ("Fake Interface 8ch"));
             expectEquals (st.sampleRate, 96000.0);
             expectEquals (st.bufferSize, 128);
@@ -1195,7 +1194,7 @@ public:
         beginTest ("Master and headphone outputs land on the assigned physical channels");
         {
             Rig rig;
-            AudioDeviceController::Settings s;
+            DeviceSettings s;
             s.typeName = FakeAudioDeviceType::typeName;
             s.deviceName = "Fake Interface 8ch";
             s.masterFirstChannel = 4;   // outputs 5/6
@@ -1203,10 +1202,10 @@ public:
             expectEquals (rig.controller->apply (s), juce::String());
 
             auto& mixer = rig.engine.getMixer();
-            mixer.setCrossfaderAssign (0, Mixer::CrossfaderAssign::Thru);
-            mixer.setCrossfaderAssign (1, Mixer::CrossfaderAssign::Thru);
+            mixer.setCrossfaderAssign (0, CrossfaderAssign::Thru);
+            mixer.setCrossfaderAssign (1, CrossfaderAssign::Thru);
             mixer.setChannelVolume (1, 0.0f);   // deck B in headphones only
-            mixer.setCueEnabled (1, true);
+            rig.engine.getCue().setCueEnabled (1, true);
             rig.engine.getDeck (0).loadTrack (makeTrack (sine (440.0, 10.0, 48000.0, 0.3f), 48000.0));
             rig.engine.getDeck (1).loadTrack (makeTrack (sine (660.0, 10.0, 48000.0, 0.3f), 48000.0));
             rig.engine.getDeck (0).play();
@@ -1232,7 +1231,7 @@ public:
         beginTest ("Disconnection: falls back to the default device, then reconnects");
         {
             Rig rig;
-            AudioDeviceController::Settings s;
+            DeviceSettings s;
             s.typeName = FakeAudioDeviceType::typeName;
             s.deviceName = "Fake Interface 8ch";
             s.cueFirstChannel = 2;
@@ -1245,9 +1244,9 @@ public:
             rig.fake->setPlugged ("Fake Interface 8ch", false);
             rig.controller->poll();
             auto st = rig.controller->getStatus();
-            expect (st.state == AudioDeviceController::State::fallback, st.message);
+            expect (st.state == DeviceState::fallback, st.message);
             expectEquals (st.deviceName, juce::String ("Fake Laptop 2ch"));
-            expectEquals (rig.engine.getMixer().getCueOutputLeft(), -1, "no outputs 3/4 on a 2ch device");
+            expectEquals (rig.engine.getRouter().getCueOutputLeft(), -1, "no outputs 3/4 on a 2ch device");
 
             // Playback continues on the fallback device without losing position.
             rig.device()->pump (20);
@@ -1258,15 +1257,15 @@ public:
             for (int i = 0; i < 6; ++i)
                 rig.controller->poll();
             st = rig.controller->getStatus();
-            expect (st.state == AudioDeviceController::State::running, st.message);
+            expect (st.state == DeviceState::running, st.message);
             expectEquals (st.deviceName, juce::String ("Fake Interface 8ch"));
-            expectEquals (rig.engine.getMixer().getCueOutputLeft(), 2, "headphone routing restored");
+            expectEquals (rig.engine.getRouter().getCueOutputLeft(), 2, "headphone routing restored");
         }
 
         beginTest ("Disconnection without fallback: waits, then reconnects");
         {
             Rig rig;
-            AudioDeviceController::Settings s;
+            DeviceSettings s;
             s.typeName = FakeAudioDeviceType::typeName;
             s.deviceName = "Fake Interface 8ch";
             s.fallbackToDefaultDevice = false;
@@ -1275,49 +1274,49 @@ public:
             rig.fake->setPlugged ("Fake Interface 8ch", false);
             rig.controller->poll();
             auto st = rig.controller->getStatus();
-            expect (st.state == AudioDeviceController::State::recovering, st.message);
-            expect (rig.engine.getDeviceManager().getCurrentAudioDevice() == nullptr, "must not play through another device");
+            expect (st.state == DeviceState::recovering, st.message);
+            expect (rig.engine.getDevices().getJuceDeviceManager().getCurrentAudioDevice() == nullptr, "must not play through another device");
 
             for (int i = 0; i < 6; ++i) rig.controller->poll();
-            expect (rig.controller->getStatus().state == AudioDeviceController::State::recovering);
+            expect (rig.controller->getStatus().state == DeviceState::recovering);
 
             rig.fake->setPlugged ("Fake Interface 8ch", true);
             for (int i = 0; i < 6; ++i) rig.controller->poll();
-            expect (rig.controller->getStatus().state == AudioDeviceController::State::running);
+            expect (rig.controller->getStatus().state == DeviceState::running);
         }
 
         beginTest ("Stalled audio callback is detected and the device restarted");
         {
             Rig rig;
-            AudioDeviceController::Settings s;
+            DeviceSettings s;
             s.typeName = FakeAudioDeviceType::typeName;
             s.deviceName = "Fake Interface 8ch";
             rig.controller->apply (s);
             rig.device()->pump (4);
             rig.controller->poll();
-            expect (rig.controller->getStatus().state == AudioDeviceController::State::running);
+            expect (rig.controller->getStatus().state == DeviceState::running);
 
             for (int i = 0; i < 4; ++i)   // no callbacks for ~2 s of watchdog ticks
                 rig.controller->poll();
             for (int i = 0; i < 6; ++i)
                 rig.controller->poll();
             auto st = rig.controller->getStatus();
-            expect (st.state == AudioDeviceController::State::running, st.message);
+            expect (st.state == DeviceState::running, st.message);
             expect (st.message.contains ("Reconnected"), st.message);
         }
 
         beginTest ("Driver error triggers recovery");
         {
             Rig rig;
-            AudioDeviceController::Settings s;
+            DeviceSettings s;
             s.typeName = FakeAudioDeviceType::typeName;
             s.deviceName = "Fake Interface 8ch";
             rig.controller->apply (s);
             rig.device()->raiseError();
             rig.controller->poll();
             for (int i = 0; i < 6; ++i) rig.controller->poll();
-            expect (rig.controller->getStatus().state == AudioDeviceController::State::running);
-            expect (! rig.engine.hasDeviceError());
+            expect (rig.controller->getStatus().state == DeviceState::running);
+            expect (rig.controller->getStatus().message.contains ("Reconnected"), rig.controller->getStatus().message);
         }
 
         beginTest ("Silent clock keeps the engine running without a device, and hands over cleanly");
@@ -1326,14 +1325,14 @@ public:
             rig.engine.prepareToPlay (48000.0);
             rig.engine.getDeck (0).loadTrack (makeTrack (sine (440.0, 30.0, 48000.0, 0.3f), 48000.0));
             rig.engine.getDeck (0).play();
-            rig.engine.setSilentClockEnabled (true);
+            rig.engine.setRunWithoutOutput (true);
             expect (rig.engine.isRunningOnSilentClock());
             juce::Thread::sleep (600);
             const double t1 = rig.engine.getDeck (0).getState().elapsedSeconds;
             expectWithinAbsoluteError (t1, 0.6, 0.25, "advances in real time");
 
             // Opening a device takes over: from now on only device callbacks advance the playhead.
-            AudioDeviceController::Settings s;
+            DeviceSettings s;
             s.typeName = FakeAudioDeviceType::typeName;
             s.deviceName = "Fake Interface 8ch";
             expectEquals (rig.controller->apply (s), juce::String());
@@ -1352,7 +1351,7 @@ public:
             const double t3 = rig.engine.getDeck (0).getState().elapsedSeconds;
             juce::Thread::sleep (400);
             expectGreaterThan (rig.engine.getDeck (0).getState().elapsedSeconds, t3 + 0.2);
-            rig.engine.setSilentClockEnabled (false);
+            rig.engine.setRunWithoutOutput (false);
         }
 
         beginTest ("Settings persist through XML");
@@ -1360,7 +1359,7 @@ public:
             std::unique_ptr<juce::XmlElement> xml;
             {
                 Rig rig;
-                AudioDeviceController::Settings s;
+                DeviceSettings s;
                 s.typeName = FakeAudioDeviceType::typeName;
                 s.deviceName = "Fake Interface 8ch";
                 s.sampleRate = 44100.0;
@@ -1376,8 +1375,8 @@ public:
             expectEquals (st.deviceName, juce::String ("Fake Interface 8ch"));
             expectEquals (st.sampleRate, 44100.0);
             expectEquals (st.bufferSize, 64);
-            expectEquals (rig.engine.getMixer().getMasterOutputLeft(), 2);
-            expectEquals (rig.engine.getMixer().getCueOutputLeft(), 6);
+            expectEquals (rig.engine.getRouter().getMasterOutputLeft(), 2);
+            expectEquals (rig.engine.getRouter().getCueOutputLeft(), 6);
         }
     }
 };

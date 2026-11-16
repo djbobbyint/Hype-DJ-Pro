@@ -17,15 +17,15 @@ juce::Colour bandColour (uint8_t low, uint8_t mid, uint8_t high, float brightnes
 }
 
 //==============================================================================
-ScrollingWaveform::ScrollingWaveform (AudioEngine& e, int d) : engine (e), deck (d)
+ScrollingWaveform::ScrollingWaveform (EngineInterface& e, int d) : engine (e), deck (d)
 {
     setOpaque (true);
 }
 
-void ScrollingWaveform::update (const Deck::State& s, const LoadedTrack::Ptr& t)
+void ScrollingWaveform::update (const DeckState& s, std::shared_ptr<const WaveformData> w)
 {
     state = s;
-    track = t;
+    waveform = std::move (w);
     repaint();
 }
 
@@ -38,8 +38,6 @@ void ScrollingWaveform::paint (juce::Graphics& g)
     const float w = (float) bounds.getWidth(), h = (float) bounds.getHeight();
     const float centreY = h * 0.5f;
     const float playheadX = w * 0.5f;
-
-    auto waveform = track != nullptr ? track->getWaveform() : nullptr;
 
     if (waveform == nullptr || ! state.loaded)
     {
@@ -154,7 +152,7 @@ void ScrollingWaveform::mouseDrag (const juce::MouseEvent& e)
     lastDragX = e.x;
     const double secondsPerPixel = visibleSeconds / juce::jmax (1, getWidth());
 
-    auto& d = engine.getDeck (deck);
+    auto& d = engine.deck (deck);
     if (state.playing)
         d.setPitchBend (juce::jlimit (-0.2, 0.2, -dx * 0.01));   // drag left = speed up (pull the record)
     else if (dx != 0)
@@ -164,7 +162,7 @@ void ScrollingWaveform::mouseDrag (const juce::MouseEvent& e)
 void ScrollingWaveform::mouseUp (const juce::MouseEvent&)
 {
     if (state.playing)
-        engine.getDeck (deck).setPitchBend (0.0);
+        engine.deck (deck).setPitchBend (0.0);
 }
 
 void ScrollingWaveform::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& wheel)
@@ -174,17 +172,17 @@ void ScrollingWaveform::mouseWheelMove (const juce::MouseEvent&, const juce::Mou
 }
 
 //==============================================================================
-OverviewWaveform::OverviewWaveform (AudioEngine& e, int d) : engine (e), deck (d)
+OverviewWaveform::OverviewWaveform (EngineInterface& e, int d) : engine (e), deck (d)
 {
     setTooltip ("Click or drag to seek");
 }
 
-void OverviewWaveform::update (const Deck::State& s, const LoadedTrack::Ptr& t)
+void OverviewWaveform::update (const DeckState& s, std::shared_ptr<const WaveformData> w)
 {
-    if (t.get() != track.get())
+    if (w != waveform)
         cacheValid = false;
     state = s;
-    track = t;
+    waveform = std::move (w);
     repaint();
 }
 
@@ -196,7 +194,6 @@ void OverviewWaveform::rebuildCache()
 
     cache = juce::Image (juce::Image::ARGB, getWidth(), getHeight(), true);
     juce::Graphics g (cache);
-    auto waveform = track != nullptr ? track->getWaveform() : nullptr;
     if (waveform == nullptr || waveform->getNumBins() == 0)
         return;
 
@@ -231,7 +228,7 @@ void OverviewWaveform::paint (juce::Graphics& g)
     g.setColour (Palette::well);
     g.fillRect (r);
 
-    if (! state.loaded || track == nullptr)
+    if (! state.loaded || waveform == nullptr)
     {
         g.setColour (Palette::outline);
         g.drawHorizontalLine (getHeight() / 2, 0.0f, r.getWidth());
@@ -268,7 +265,7 @@ void OverviewWaveform::paint (juce::Graphics& g)
 void OverviewWaveform::seekTo (int x)
 {
     if (state.loaded && getWidth() > 0)
-        engine.getDeck (deck).seekToNormalised (juce::jlimit (0.0, 1.0, (double) x / getWidth()));
+        engine.deck (deck).seekToNormalised (juce::jlimit (0.0, 1.0, (double) x / getWidth()));
 }
 
 void OverviewWaveform::mouseDown (const juce::MouseEvent& e) { seekTo (e.x); }

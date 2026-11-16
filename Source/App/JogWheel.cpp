@@ -2,12 +2,12 @@
 
 namespace hype::ui
 {
-JogWheel::JogWheel (AudioEngine& e, int d) : engine (e), deck (d)
+JogWheel::JogWheel (EngineInterface& e, int d) : engine (e), deck (d)
 {
     setTooltip ("Jog wheel: turn while playing to nudge the tempo, while paused to scrub");
 }
 
-void JogWheel::update (const Deck::State& s)
+void JogWheel::update (const DeckState& s)
 {
     state = s;
     repaint();
@@ -78,7 +78,7 @@ void JogWheel::turn (double deltaRadians)
     if (! state.loaded || std::abs (deltaRadians) < 1.0e-6)
         return;
 
-    auto& d = engine.getDeck (deck);
+    auto& d = engine.deck (deck);
     if (state.playing)
     {
         // Clockwise (positive) speeds up. ~0.6 tempo ratio per radian per event, capped.
@@ -126,7 +126,7 @@ void JogWheel::timerCallback()
     stopTimer();
     if (bending)
     {
-        engine.getDeck (deck).setPitchBend (0.0);
+        engine.deck (deck).setPitchBend (0.0);
         bending = false;
     }
 }

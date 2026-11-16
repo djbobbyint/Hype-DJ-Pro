@@ -123,22 +123,27 @@ target_compile_definitions(hype_juce INTERFACE $<TARGET_PROPERTY:hype_juce,COMPI
 # Core engine library
 # ---------------------------------------------------------------------------
 add_library(hype_engine STATIC
-    Source/Engine/AudioDeviceController.cpp
-    Source/Engine/AudioDeviceController.h
+    Source/Api/HypeEngineApi.h
+    Source/Engine/AudioDeviceManager.cpp
+    Source/Engine/AudioDeviceManager.h
     Source/Engine/AudioEngine.cpp
     Source/Engine/AudioEngine.h
     Source/Engine/AudioFileDecoder.cpp
     Source/Engine/AudioFileDecoder.h
     Source/Engine/BeatAnalyzer.cpp
     Source/Engine/BeatAnalyzer.h
-    Source/Engine/Deck.cpp
-    Source/Engine/Deck.h
+    Source/Engine/CueEngine.cpp
+    Source/Engine/CueEngine.h
+    Source/Engine/DeckEngine.cpp
+    Source/Engine/DeckEngine.h
     Source/Engine/EngineConfig.h
     Source/Engine/FFmpegDecoder.cpp
     Source/Engine/FFmpegDecoder.h
     Source/Engine/LoadedTrack.h
-    Source/Engine/Mixer.cpp
-    Source/Engine/Mixer.h
+    Source/Engine/MixerEngine.cpp
+    Source/Engine/MixerEngine.h
+    Source/Engine/OutputRouter.cpp
+    Source/Engine/OutputRouter.h
     Source/Engine/SincInterpolator.cpp
     Source/Engine/SincInterpolator.h
     Source/Engine/SpscQueue.h
@@ -146,6 +151,8 @@ add_library(hype_engine STATIC
     Source/Engine/ThreeBandEq.h
     Source/Engine/TimeStretcher.cpp
     Source/Engine/TimeStretcher.h
+    Source/Engine/TrackLoader.cpp
+    Source/Engine/TrackLoader.h
     Source/Engine/WaveformData.cpp
     Source/Engine/WaveformData.h)
 
@@ -190,6 +197,13 @@ if(HYPE_BUILD_APP)
         Source/App/Widgets.h)
 
     target_link_libraries(HypeDJPro PRIVATE hype_engine)
+
+    # The UI may only talk to the engine through Source/Api/HypeEngineApi.h.
+    add_custom_target(hype_check_api_boundary
+        COMMAND ${CMAKE_COMMAND} -DAPP_DIR=${CMAKE_CURRENT_SOURCE_DIR}/Source/App
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckApiBoundary.cmake
+        COMMENT "Checking that the UI only uses the public engine API")
+    add_dependencies(HypeDJPro hype_check_api_boundary)
 endif()
 
 # ---------------------------------------------------------------------------

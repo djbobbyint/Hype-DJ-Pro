@@ -1,5 +1,4 @@
 #include "AudioEngine.h"
-#include "BeatAnalyzer.h"
 
 #include <cmath>
 #include <limits>
@@ -7,6 +6,11 @@
 
 namespace hype
 {
+std::unique_ptr<EngineInterface> createEngine()
+{
+    return std::make_unique<AudioEngine>();
+}
+
 //==============================================================================
 class AudioEngine::Housekeeper : public juce::Thread
 {
@@ -27,7 +31,7 @@ private:
 };
 
 //==============================================================================
-/** Drives the engine in real time while no device is running (see setSilentClockEnabled). */
+/** Drives the engine in real time while no device is running (see setRunWithoutOutput). */
 class AudioEngine::SilentClock : public juce::Thread
 {
 public:
@@ -70,156 +74,59 @@ private:
 };
 
 //==============================================================================
-class AudioEngine::LoadJob : public juce::ThreadPoolJob
-{
-public:
-    LoadJob (AudioEngine& e, int d, juce::File f, std::shared_ptr<std::atomic<bool>> cancel, LoadCallback cb)
-        : juce::ThreadPoolJob ("HYPE load " + f.getFileName()),
-          engine (e), deck (d), file (std::move (f)), cancelFlag (std::move (cancel)), callback (std::move (cb)) {}
-
-    JobStatus runJob() override
-    {
-        AudioFileDecoder decoder;
-        auto result = AudioEngine::decodeAndAnalyse (decoder, file, cancelFlag.get());
-
-        if (cancelFlag->load())
-        {
-            result.track = nullptr;
-            result.error = "Cancelled (superseded by a newer load)";
-        }
-        else if (result.wasOk() && ! engine.getDeck (deck).loadTrack (result.track))
-        {
-            result.track = nullptr;
-            result.error = "Deck command queue full";
-        }
-
-        if (callback)
-            callback (deck, result);
-
-        return jobHasFinished;
-    }
-
-private:
-    AudioEngine& engine;
-    const int deck;
-    const juce::File file;
-    std::shared_ptr<std::atomic<bool>> cancelFlag;
-    LoadCallback callback;
-};
-
-//==============================================================================
 AudioEngine::AudioEngine()
+    : decks { std::make_unique<DeckEngine> (0), std::make_unique<DeckEngine> (1) },
+      trackLoader ([this] (int d, LoadedTrack::Ptr t) { return decks[(size_t) d]->loadTrack (std::move (t)); })
 {
     for (int d = 0; d < config::numDecks; ++d)
     {
-        decks[(size_t) d] = std::make_unique<Deck> (d);
         syncMaster[d] = -1;
         publishedSyncMaster[d].store (-1);
         scheduledPlay[d] = -1;
     }
 
     // Default routing: deck A on the left of the crossfader, deck B on the right.
-    mixer.setCrossfaderAssign (0, Mixer::CrossfaderAssign::A);
-    mixer.setCrossfaderAssign (1, Mixer::CrossfaderAssign::B);
+    mixerEngine.setCrossfaderAssign (0, CrossfaderAssign::A);
+    mixerEngine.setCrossfaderAssign (1, CrossfaderAssign::B);
 
     prepareToPlay (48000.0);
 
     housekeeper = std::make_unique<Housekeeper> (*this);
     housekeeper->startThread (juce::Thread::Priority::low);
-
     silentClock = std::make_unique<SilentClock> (*this);
+
+    deviceManager = std::make_unique<AudioDeviceManager> (static_cast<AudioDeviceHost&> (*this), router);
 }
 
 AudioEngine::~AudioEngine()
 {
-    closeDevice();
-
-    {
-        const juce::SpinLock::ScopedLockType sl (loadLock);
-        for (auto& c : activeLoadCancel)
-            if (c != nullptr)
-                c->store (true);
-    }
-    loaderPool.removeAllJobs (true, 10000);
-
+    deviceManager.reset();          // closes the device: no more callbacks
     silentClock->stopThread (2000);
     housekeeper->stopThread (2000);
     collectGarbage();
 }
 
-//==============================================================================
-// Device
-//==============================================================================
-
-juce::String AudioEngine::openDevice (const DeviceSettings& settings)
+void AudioEngine::loadTrack (int deck, const juce::File& file, LoadCallback onFinished)
 {
-    closeDevice();
-
-    if (settings.deviceType.isNotEmpty())
-        deviceManager.setCurrentAudioDeviceType (settings.deviceType, true);
-
-    const int outs = juce::jlimit (2, maxOutputChannels, settings.numOutputChannels);
-
-    juce::AudioDeviceManager::AudioDeviceSetup setup;
-    setup.outputDeviceName = settings.outputDevice;
-    setup.sampleRate = settings.sampleRate;
-    setup.bufferSize = settings.bufferSize;
-    setup.useDefaultOutputChannels = false;
-    setup.outputChannels.setRange (0, outs, true);
-    setup.useDefaultInputChannels = false;
-    setup.inputChannels.clear();
-
-    auto error = deviceManager.initialise (0, outs, nullptr, settings.outputDevice.isEmpty(),
-                                           settings.outputDevice, &setup);
-
-    if (error.isEmpty() && deviceManager.getCurrentAudioDevice() == nullptr)
-        error = "No audio output device available";
-
-    if (error.isNotEmpty())
-        return error;
-
-    deviceManager.addAudioCallback (this);
-    return {};
+    trackLoader.loadAsync (deck, file, std::move (onFinished));
 }
 
-void AudioEngine::attachToDeviceManager()
-{
-    deviceManager.removeAudioCallback (this);
-    deviceManager.addAudioCallback (this);
-}
-
-void AudioEngine::closeDevice()
-{
-    deviceManager.removeAudioCallback (this);
-    deviceManager.closeAudioDevice();
-}
-
-AudioEngine::DeviceStatus AudioEngine::getDeviceStatus() const
-{
-    DeviceStatus s;
-    s.cpuLoad = loadMeasurer.getLoadAsProportion();
-
-    if (auto* device = deviceManager.getCurrentAudioDevice())
-    {
-        s.open = device->isPlaying();
-        s.typeName = device->getTypeName();
-        s.deviceName = device->getName();
-        s.sampleRate = device->getCurrentSampleRate();
-        s.bufferSize = device->getCurrentBufferSizeSamples();
-        s.numOutputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
-        if (s.sampleRate > 0)
-            s.outputLatencyMs = 1000.0 * (device->getOutputLatencyInSamples() + s.bufferSize) / s.sampleRate;
-        s.xruns = device->getXRunCount();
-    }
-    return s;
-}
-
-void AudioEngine::setSilentClockEnabled (bool shouldRun)
+void AudioEngine::setRunWithoutOutput (bool shouldRun)
 {
     silentClockEnabled.store (shouldRun);
     if (shouldRun && ! silentClock->isThreadRunning())
         silentClock->startThread (juce::Thread::Priority::high);
 }
+
+void AudioEngine::collectGarbage()
+{
+    for (auto& d : decks)
+        d->collectGarbage();
+}
+
+//==============================================================================
+// Device callback
+//==============================================================================
 
 void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
 {
@@ -228,8 +135,7 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
     while (silentRendering.load())
         std::this_thread::yield();
 
-    // JUCE passes only the *active* output channels, packed in order. Build the map from
-    // physical channel number (what the routing uses) to packed index.
+    // JUCE passes only the *active* output channels, packed in order: map physical -> packed.
     const auto active = device->getActiveOutputChannels();
     int packed = 0;
     for (int phys = 0; phys < maxOutputChannels; ++phys)
@@ -245,12 +151,9 @@ void AudioEngine::audioDeviceStopped()
     deviceActive.store (false);   // the silent clock (if enabled) takes over
 }
 
-void AudioEngine::audioDeviceError (const juce::String& message)
+void AudioEngine::audioDeviceError (const juce::String&)
 {
-    // Called by some drivers when the device disappears; the AudioDeviceController's
-    // watchdog sees this flag and recovers on the message thread.
-    deviceErrorFlag.store (true);
-    juce::ignoreUnused (message);
+    deviceErrorFlag.store (true);   // the AudioDeviceManager watchdog recovers on the message thread
 }
 
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const*, int,
@@ -268,11 +171,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const*, int,
 void AudioEngine::prepareToPlay (double sampleRate, int expectedBlockSize)
 {
     currentSampleRate.store (sampleRate);
-
     for (auto& d : decks)
         d->prepare (sampleRate);
-
-    mixer.prepare (sampleRate);
+    mixerEngine.prepare (sampleRate);
+    cueEngine.prepare (sampleRate);
     deckBuffers.setSize (config::numDecks * 2, config::maxInternalBlock);
     loadMeasurer.reset (sampleRate, juce::jmax (1, expectedBlockSize));
 }
@@ -289,14 +191,13 @@ void AudioEngine::renderBlock (float* const* outputs, int numOutputChannels, int
     juce::ScopedNoDenormals noDenormals;
     juce::AudioProcessLoadMeasurer::ScopedTimer timer (loadMeasurer, numSamples);
 
-    // Silence everything once up front; the mixer overwrites the channels it routes to.
     for (int c = 0; c < numOutputChannels; ++c)
         if (outputs[c] != nullptr)
             juce::FloatVectorOperations::clear (outputs[c], numSamples);
 
     int64_t now = sampleClock.load (std::memory_order_relaxed);
 
-    // 1) Commands from the control threads. Deck commands first, so engine-level actions
+    // 1) Commands from control threads. Deck commands first, so engine-level actions
     //    (sync, quantised start) see the deck state the user has just set up.
     for (auto& d : decks)
         d->pullCommands (now);
@@ -308,6 +209,8 @@ void AudioEngine::renderBlock (float* const* outputs, int numOutputChannels, int
     // 2) Render in chunks, splitting exactly at scheduled command times.
     const float* deckL[config::numDecks];
     const float* deckR[config::numDecks];
+    const float* tapL[config::numDecks];
+    const float* tapR[config::numDecks];
 
     int offset = 0;
     while (offset < numSamples)
@@ -323,7 +226,6 @@ void AudioEngine::renderBlock (float* const* outputs, int numOutputChannels, int
         }
 
         int chunk = juce::jmin (numSamples - offset, config::maxInternalBlock);
-
         int64_t next = std::numeric_limits<int64_t>::max();
         for (int d = 0; d < config::numDecks; ++d)
         {
@@ -336,6 +238,7 @@ void AudioEngine::renderBlock (float* const* outputs, int numOutputChannels, int
 
         updateSyncLocks();
 
+        // Decks
         for (int d = 0; d < config::numDecks; ++d)
         {
             float* l = deckBuffers.getWritePointer (d * 2);
@@ -345,82 +248,31 @@ void AudioEngine::renderBlock (float* const* outputs, int numOutputChannels, int
             deckR[d] = r;
         }
 
+        // Mixer, then headphones from the mixer's pre-fader taps and master bus
+        mixerEngine.process (deckL, deckR, chunk);
+        for (int d = 0; d < config::numDecks; ++d)
+        {
+            tapL[d] = mixerEngine.getChannelOutput (d, 0);
+            tapR[d] = mixerEngine.getChannelOutput (d, 1);
+        }
+        cueEngine.process (tapL, tapR, mixerEngine.getMasterOutput (0), mixerEngine.getMasterOutput (1), chunk);
+
+        // Physical outputs
         for (int phys = 0; phys < numPhysical; ++phys)
         {
             const int packed = physToPacked != nullptr ? physToPacked[phys] : phys;
             chunkOutputs[phys] = (packed >= 0 && packed < numOutputChannels && outputs[packed] != nullptr)
                                      ? outputs[packed] + offset : nullptr;
         }
-
-        mixer.process (deckL, deckR, chunkOutputs, numPhysical, chunk);
+        router.route (chunkOutputs, numPhysical, chunk,
+                      mixerEngine.getMasterOutput (0), mixerEngine.getMasterOutput (1),
+                      cueEngine.getOutput (0), cueEngine.getOutput (1), cueEngine.isSplitActive(),
+                      tapL, tapR);
 
         offset += chunk;
         now += chunk;
         sampleClock.store (now, std::memory_order_release);
     }
-}
-
-void AudioEngine::collectGarbage()
-{
-    for (auto& d : decks)
-        d->collectGarbage();
-}
-
-//==============================================================================
-// Loading
-//==============================================================================
-
-AudioFileDecoder::Result AudioEngine::decodeAndAnalyse (AudioFileDecoder& decoder, const juce::File& file,
-                                                        const std::atomic<bool>* cancelFlag)
-{
-    auto result = decoder.decode (file, cancelFlag);
-
-    if (result.wasOk() && result.track->getInfo().bpm <= 0.0)
-    {
-        // The track isn't shared with any deck yet; wrap its channels without copying.
-        float* channels[2] = { const_cast<float*> (result.track->getChannel (0)),
-                               const_cast<float*> (result.track->getChannel (1)) };
-        const juce::AudioBuffer<float> view (channels, 2, (int) result.track->getLength());
-        const auto beats = analyseBeats (view, result.track->getSampleRate());
-        if (beats.bpm > 0.0)
-            result.track->setBeatGrid (beats.bpm, beats.firstBeatSeconds);
-    }
-
-    if (result.wasOk() && result.track->getWaveform() == nullptr)
-        result.track->setWaveform (WaveformData::build (result.track->getChannel (0), result.track->getChannel (1),
-                                                        result.track->getLength(), result.track->getSampleRate()));
-    return result;
-}
-
-void AudioEngine::loadTrackAsync (int deck, const juce::File& file, LoadCallback onFinished)
-{
-    jassert (deck >= 0 && deck < config::numDecks);
-
-    auto cancel = std::make_shared<std::atomic<bool>> (false);
-    {
-        const juce::SpinLock::ScopedLockType sl (loadLock);
-        if (activeLoadCancel[deck] != nullptr)
-            activeLoadCancel[deck]->store (true);
-        activeLoadCancel[deck] = cancel;
-    }
-
-    loaderPool.addJob (new LoadJob (*this, deck, file, std::move (cancel), std::move (onFinished)), true);
-}
-
-AudioFileDecoder::Result AudioEngine::loadTrackSync (int deck, const juce::File& file)
-{
-    AudioFileDecoder decoder;
-    auto result = decodeAndAnalyse (decoder, file);
-
-    if (result.wasOk() && ! getDeck (deck).loadTrack (result.track))
-        return { nullptr, "Deck command queue full" };
-
-    return result;
-}
-
-juce::String AudioEngine::getSupportedFormatsWildcard() const
-{
-    return AudioFileDecoder().getWildcardForAllFormats();
 }
 
 //==============================================================================

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/AudioEngine.h"
+#include "Api/HypeEngineApi.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
 namespace hype::ui
@@ -13,7 +13,7 @@ namespace hype::ui
 class UiSelfTest : private juce::Timer
 {
 public:
-    UiSelfTest (juce::Component& root, AudioEngine& engine);
+    UiSelfTest (juce::Component& root, EngineInterface& engine);
     void start();
 
 private:
@@ -36,7 +36,7 @@ private:
     juce::MouseEvent makeEvent (juce::Component&, juce::Point<float>, bool down) const;
 
     juce::Component& root;
-    AudioEngine& engine;
+    EngineInterface& engine;
     std::vector<Step> steps;
     size_t current = 0;
     bool waitingForCheck = false;

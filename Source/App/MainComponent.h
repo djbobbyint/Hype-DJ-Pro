@@ -30,12 +30,15 @@ public:
 
 private:
     void timerCallback() override;
+    void onCommandLineLoadsFinished();
     void restoreSettings();
     std::unique_ptr<juce::XmlElement> createMixerXml() const;
     void restoreMixerXml (const juce::XmlElement*);
 
-    AudioEngine engine;
-    AudioDeviceController deviceController { engine };
+    // The UI owns the engine only through the public API.
+    std::unique_ptr<EngineInterface> enginePtr { createEngine() };
+    EngineInterface& engine { *enginePtr };
+    DeviceControl& deviceController { engine.devices() };
 
     ScrollingWaveform waveA { engine, 0 }, waveB { engine, 1 };
     DeckComponent deckA { engine, 0 }, deckB { engine, 1 };
@@ -47,7 +50,9 @@ private:
     juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
     juce::Component::SafePointer<AudioSettingsComponent> settingsComponent;
 
-    AudioDeviceController::Status deviceStatus;
+    DeviceStatus deviceStatus;
+    int pendingLoads = 0;
+    bool startSelfTestAfterLoads = false, playAfterLoads = false;
     juce::Rectangle<int> topBar, statusPill;
     int frame = 0;
 
