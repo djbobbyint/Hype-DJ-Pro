@@ -16,7 +16,7 @@ mkdir -p "$DEPS"
 DEPS="$(cd "$DEPS" && pwd)"
 
 echo "== 0. Tools"
-need=(clang lld g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix mingw-w64-tools cmake ninja-build git make)
+need=(clang lld g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix mingw-w64-tools cmake ninja-build git make nsis)
 missing=()
 for p in "${need[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p"); done
 if [ ${#missing[@]} -gt 0 ]; then
@@ -102,4 +102,9 @@ cp "$DEPS/ffmpeg-src/COPYING.LGPLv2.1" "$PKG/licenses/FFmpeg-LGPL-2.1.txt"
 cp "$ROOT/packaging/windows/THIRD-PARTY-NOTICES.txt" "$PKG/licenses/"
 cp "$ROOT/external/JUCE/LICENSE.md" "$PKG/licenses/JUCE-LICENSE.md" 2>/dev/null || true
 (cd "$BUILD/package" && rm -f ../HYPE-DJ-PRO-windows-x64.zip && python3 -c "import shutil; shutil.make_archive('../HYPE-DJ-PRO-windows-x64', 'zip', '.', 'HYPE-DJ-PRO-windows-x64')")
+echo "== 5. Installer"
+VERSION="$(sed -n 's/^project(HypeDJPro VERSION \([0-9.]*\).*/\1/p' "$ROOT/CMakeLists.txt")"
+makensis -V2 -DSRC="$PKG" -DVERSION="$VERSION" -DOUTFILE="$BUILD/HYPE-DJ-PRO-$VERSION-Setup.exe" "$ROOT/packaging/windows/installer.nsi"
+
 echo "Done: $BUILD/HYPE-DJ-PRO-windows-x64.zip"
+echo "      $BUILD/HYPE-DJ-PRO-$VERSION-Setup.exe"

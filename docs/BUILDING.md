@@ -15,7 +15,7 @@ cmake --build build
 
 ## Windows x64: cross-built from Linux (how the delivered build was made)
 ```bash
-scripts/build-windows.sh            # → build-win/HYPE-DJ-PRO-windows-x64.zip
+scripts/build-windows.sh            # → build-win/HYPE-DJ-PRO-windows-x64.zip and HYPE-DJ-PRO-<version>-Setup.exe
 ```
 This uses the distribution's Clang 18, targeting `x86_64-w64-windows-gnu` with the mingw-w64 sysroot
 (`cmake/clang-mingw-w64-x86_64.cmake`). JUCE 8 officially targets MSVC, so the build adds:
@@ -26,6 +26,8 @@ This uses the distribution's Clang 18, targeting `x86_64-w64-windows-gnu` with t
 - a Windows 10 target (`_WIN32_WINNT=0x0A00`), an explicit system-library list, and static GCC/C++ runtimes.
 
 FFmpeg is built from source (LGPL, audio-only, shared DLLs with no extra runtime dependencies).
+The installer is a native 64-bit NSIS installer (`packaging/windows/installer.nsi`): Program Files, all-users
+Start-menu and optional desktop shortcuts, optional test suites, and an uninstaller registered in Apps & features.
 The resulting executables import only Windows system DLLs plus the four FFmpeg DLLs.
 
 ## Windows x64: native with Visual Studio 2022 (not yet built or tested here)
